@@ -3,10 +3,10 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>local.dellaudio.menu</string>
+    <string>io.github.utsabfdahal.volumac</string>
     <key>ProgramArguments</key>
     <array>
-        <string>__HOME__/Applications/Dell Audio.app/Contents/MacOS/DellAudioMenu</string>
+        <string>__HOME__/Applications/VoluMAC.app/Contents/MacOS/VoluMAC</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
@@ -15,8 +15,8 @@
     <key>LimitLoadToSessionType</key>
     <string>Aqua</string>
     <key>StandardOutPath</key>
-    <string>__HOME__/Library/Logs/DellAudioMenu.log</string>
+    <string>__HOME__/Library/Logs/VoluMAC.log</string>
     <key>StandardErrorPath</key>
-    <string>__HOME__/Library/Logs/DellAudioMenu.log</string>
+    <string>__HOME__/Library/Logs/VoluMAC.log</string>
 </dict>
 </plist>

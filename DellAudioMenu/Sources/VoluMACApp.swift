@@ -2,97 +2,191 @@ import AppKit
 import CoreAudio
 import SwiftUI
 
-private enum Product {
-    static let displayMatch = "DELL"
+private enum AppConfiguration {
     static let preferredRate = 48_000.0
+    static let bundleIdentifier = "io.github.utsabfdahal.volumac"
+    static let legacyDefaultsSuite = "local.dellaudio.menu"
 }
 
 private enum AudioRouteError: LocalizedError {
-    case displayUnavailable
+    case outputUnavailable
     case builtInUnavailable
     case coreAudio(String, OSStatus)
 
     var errorDescription: String? {
         switch self {
-        case .displayUnavailable:
-            return "Dell display audio is not connected."
+        case .outputUnavailable:
+            return "The selected audio output is not connected."
         case .builtInUnavailable:
-            return "MacBook speakers are unavailable."
+            return "Built-in speakers are unavailable."
         case let .coreAudio(operation, status):
             return "\(operation) failed (CoreAudio \(status))."
         }
     }
 }
 
+struct OutputDevice: Identifiable, Equatable {
+    let id: AudioDeviceID
+    let uid: String
+    let name: String
+    let transportType: UInt32
+    let sampleRate: Double
+
+    var transportLabel: String {
+        switch transportType {
+        case kAudioDeviceTransportTypeHDMI: return "HDMI"
+        case kAudioDeviceTransportTypeDisplayPort: return "DisplayPort"
+        case kAudioDeviceTransportTypeThunderbolt: return "Thunderbolt"
+        case kAudioDeviceTransportTypeUSB: return "USB"
+        case kAudioDeviceTransportTypePCI: return "PCI"
+        case kAudioDeviceTransportTypeFireWire: return "FireWire"
+        case kAudioDeviceTransportTypeAVB: return "AVB"
+        case kAudioDeviceTransportTypeUnknown: return "External audio"
+        default: return fourCC(transportType)
+        }
+    }
+
+    private func fourCC(_ value: UInt32) -> String {
+        let bytes = [24, 16, 8, 0].map { UInt8((value >> UInt32($0)) & 0xff) }
+        let text = String(bytes: bytes, encoding: .macOSRoman) ?? "External audio"
+        let printable = text.unicodeScalars.allSatisfy {
+            $0.value >= 32 && $0.value <= 126
+        }
+        return printable ? text : "External audio"
+    }
+}
+
 private struct AudioSnapshot {
-    let dellDevice: AudioDeviceID?
-    let builtInDevice: AudioDeviceID?
+    let availableOutputs: [OutputDevice]
+    let selectedOutput: OutputDevice?
+    let builtInDevice: OutputDevice?
     let defaultOutput: AudioDeviceID
     let defaultSystemOutput: AudioDeviceID
-    let dellRate: Double?
-    let dellUID: String?
 
-    var dellConnected: Bool { dellDevice != nil }
-    var dellIsDefault: Bool { dellDevice == defaultOutput }
-    var dellHandlesSystemSounds: Bool { dellDevice == defaultSystemOutput }
+    var outputConnected: Bool { selectedOutput != nil }
+    var outputIsDefault: Bool { selectedOutput?.id == defaultOutput }
+    var outputHandlesSystemSounds: Bool { selectedOutput?.id == defaultSystemOutput }
 }
 
 private final class AudioRouter {
     private let system = AudioObjectID(kAudioObjectSystemObject)
+    private let excludedExternalTransports: Set<UInt32> = [
+        kAudioDeviceTransportTypeBuiltIn,
+        kAudioDeviceTransportTypeAggregate,
+        kAudioDeviceTransportTypeVirtual,
+        kAudioDeviceTransportTypeBluetooth,
+        kAudioDeviceTransportTypeBluetoothLE,
+        kAudioDeviceTransportTypeAirPlay
+    ]
 
-    func snapshot() -> AudioSnapshot {
-        let devices = allDevices().filter(hasOutput)
-        let dell = devices.first {
-            deviceName($0).localizedCaseInsensitiveContains(Product.displayMatch)
+    func snapshot(preferredUID: String?, preferredName: String?) -> AudioSnapshot {
+        let allOutputs = allOutputDevices()
+        let externalOutputs = allOutputs
+            .filter { !excludedExternalTransports.contains($0.transportType) }
+            .filter { !$0.name.hasPrefix("VoluMAC Private Engine") }
+            .filter { $0.sampleRate > 0 }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        let defaultOutput = defaultDevice(kAudioHardwarePropertyDefaultOutputDevice)
+        let defaultSystemOutput = defaultDevice(kAudioHardwarePropertyDefaultSystemOutputDevice)
+
+        var selected = preferredUID.flatMap { uid in
+            externalOutputs.first { $0.uid == uid }
         }
-        let builtIn = devices.first { deviceUID($0) == "BuiltInSpeakerDevice" }
-            ?? devices.first { deviceName($0).localizedCaseInsensitiveContains("MacBook") }
+        if selected == nil, let preferredName, !preferredName.isEmpty {
+            selected = externalOutputs.first {
+                $0.name.caseInsensitiveCompare(preferredName) == .orderedSame
+            }
+        }
+        if selected == nil, preferredUID == nil, preferredName == nil {
+            selected = externalOutputs.first { $0.id == defaultOutput }
+            if selected == nil, externalOutputs.count == 1 {
+                selected = externalOutputs.first
+            }
+        }
+
+        let builtIn = allOutputs.first {
+            $0.transportType == kAudioDeviceTransportTypeBuiltIn
+                && $0.uid == "BuiltInSpeakerDevice"
+        } ?? allOutputs.first {
+            $0.transportType == kAudioDeviceTransportTypeBuiltIn
+        }
+
         return AudioSnapshot(
-            dellDevice: dell,
+            availableOutputs: externalOutputs,
+            selectedOutput: selected,
             builtInDevice: builtIn,
-            defaultOutput: defaultDevice(kAudioHardwarePropertyDefaultOutputDevice),
-            defaultSystemOutput: defaultDevice(kAudioHardwarePropertyDefaultSystemOutputDevice),
-            dellRate: dell.map(sampleRate),
-            dellUID: dell.map(deviceUID)
+            defaultOutput: defaultOutput,
+            defaultSystemOutput: defaultSystemOutput
         )
     }
 
-    func selectDell(keep48k: Bool) throws {
-        let current = snapshot()
-        guard let device = current.dellDevice else { throw AudioRouteError.displayUnavailable }
-        if keep48k { try pinDellTo48k(device) }
-        try setDefault(device, selector: kAudioHardwarePropertyDefaultOutputDevice, operation: "Selecting Dell output")
-        try setDefault(device, selector: kAudioHardwarePropertyDefaultSystemOutputDevice, operation: "Selecting Dell system sounds")
+    func selectOutput(_ device: OutputDevice) throws {
+        try setDefault(
+            device.id,
+            selector: kAudioHardwarePropertyDefaultOutputDevice,
+            operation: "Selecting \(device.name) for application audio"
+        )
+        try setDefault(
+            device.id,
+            selector: kAudioHardwarePropertyDefaultSystemOutputDevice,
+            operation: "Selecting \(device.name) for system sounds"
+        )
     }
 
-    func selectBuiltIn() throws {
-        guard let device = snapshot().builtInDevice else { throw AudioRouteError.builtInUnavailable }
-        try setDefault(device, selector: kAudioHardwarePropertyDefaultOutputDevice, operation: "Selecting MacBook output")
-        try setDefault(device, selector: kAudioHardwarePropertyDefaultSystemOutputDevice, operation: "Selecting MacBook system sounds")
+    func selectBuiltIn(_ device: OutputDevice) throws {
+        try setDefault(
+            device.id,
+            selector: kAudioHardwarePropertyDefaultOutputDevice,
+            operation: "Selecting built-in audio"
+        )
+        try setDefault(
+            device.id,
+            selector: kAudioHardwarePropertyDefaultSystemOutputDevice,
+            operation: "Selecting built-in system sounds"
+        )
     }
 
-    func pinDellTo48k() throws {
-        guard let device = snapshot().dellDevice else { throw AudioRouteError.displayUnavailable }
-        try pinDellTo48k(device)
-    }
-
-    private func pinDellTo48k(_ device: AudioDeviceID) throws {
-        let current = sampleRate(device)
-        guard abs(current - Product.preferredRate) > 1 else { return }
-        guard supportsRate(Product.preferredRate, device: device) else {
-            throw AudioRouteError.coreAudio("Pinning Dell to 48 kHz", kAudioHardwareUnsupportedOperationError)
+    func pinTo48k(_ device: OutputDevice) throws {
+        let current = sampleRate(device.id)
+        guard abs(current - AppConfiguration.preferredRate) > 1 else { return }
+        guard supportsRate(AppConfiguration.preferredRate, device: device.id) else {
+            throw AudioRouteError.coreAudio(
+                "Setting \(device.name) to 48 kHz",
+                kAudioHardwareUnsupportedOperationError
+            )
         }
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyNominalSampleRate,
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain
         )
-        var rate = Product.preferredRate
+        var rate = AppConfiguration.preferredRate
         let status = AudioObjectSetPropertyData(
-            device, &address, 0, nil,
-            UInt32(MemoryLayout<Double>.size), &rate
+            device.id,
+            &address,
+            0,
+            nil,
+            UInt32(MemoryLayout<Double>.size),
+            &rate
         )
-        guard status == noErr else { throw AudioRouteError.coreAudio("Pinning Dell to 48 kHz", status) }
+        guard status == noErr else {
+            throw AudioRouteError.coreAudio("Setting \(device.name) to 48 kHz", status)
+        }
+    }
+
+    private func allOutputDevices() -> [OutputDevice] {
+        allDevices().filter(hasOutput).compactMap { device in
+            let uid = stringProperty(device, selector: kAudioDevicePropertyDeviceUID)
+            let name = stringProperty(device, selector: kAudioObjectPropertyName)
+            guard !uid.isEmpty, !name.isEmpty else { return nil }
+            return OutputDevice(
+                id: device,
+                uid: uid,
+                name: name,
+                transportType: uint32Property(device, selector: kAudioDevicePropertyTransportType),
+                sampleRate: sampleRate(device)
+            )
+        }
     }
 
     private func allDevices() -> [AudioDeviceID] {
@@ -103,7 +197,10 @@ private final class AudioRouter {
         )
         var size: UInt32 = 0
         guard AudioObjectGetPropertyDataSize(system, &address, 0, nil, &size) == noErr else { return [] }
-        var devices = [AudioDeviceID](repeating: 0, count: Int(size) / MemoryLayout<AudioDeviceID>.size)
+        var devices = [AudioDeviceID](
+            repeating: 0,
+            count: Int(size) / MemoryLayout<AudioDeviceID>.size
+        )
         guard AudioObjectGetPropertyData(system, &address, 0, nil, &size, &devices) == noErr else { return [] }
         return devices
     }
@@ -119,7 +216,10 @@ private final class AudioRouter {
         return size > 0
     }
 
-    private func stringProperty(_ device: AudioDeviceID, selector: AudioObjectPropertySelector) -> String {
+    private func stringProperty(
+        _ device: AudioDeviceID,
+        selector: AudioObjectPropertySelector
+    ) -> String {
         var address = AudioObjectPropertyAddress(
             mSelector: selector,
             mScope: kAudioObjectPropertyScopeGlobal,
@@ -134,12 +234,19 @@ private final class AudioRouter {
         return value.takeRetainedValue() as String
     }
 
-    private func deviceName(_ device: AudioDeviceID) -> String {
-        stringProperty(device, selector: kAudioObjectPropertyName)
-    }
-
-    private func deviceUID(_ device: AudioDeviceID) -> String {
-        stringProperty(device, selector: kAudioDevicePropertyDeviceUID)
+    private func uint32Property(
+        _ device: AudioDeviceID,
+        selector: AudioObjectPropertySelector
+    ) -> UInt32 {
+        var address = AudioObjectPropertyAddress(
+            mSelector: selector,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var value: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        AudioObjectGetPropertyData(device, &address, 0, nil, &size, &value)
+        return value
     }
 
     private func defaultDevice(_ selector: AudioObjectPropertySelector) -> AudioDeviceID {
@@ -166,8 +273,12 @@ private final class AudioRouter {
         )
         var selected = device
         let status = AudioObjectSetPropertyData(
-            system, &address, 0, nil,
-            UInt32(MemoryLayout<AudioDeviceID>.size), &selected
+            system,
+            &address,
+            0,
+            nil,
+            UInt32(MemoryLayout<AudioDeviceID>.size),
+            &selected
         )
         guard status == noErr else { throw AudioRouteError.coreAudio(operation, status) }
     }
@@ -204,9 +315,12 @@ private final class AudioRouter {
 final class AudioModel: ObservableObject {
     static let shared = AudioModel()
 
-    @Published private(set) var dellConnected = false
-    @Published private(set) var dellIsDefault = false
-    @Published private(set) var dellHandlesSystemSounds = false
+    @Published private(set) var availableOutputs: [OutputDevice] = []
+    @Published private(set) var selectedOutput: OutputDevice?
+    @Published private(set) var builtInDevice: OutputDevice?
+    @Published private(set) var outputConnected = false
+    @Published private(set) var outputIsDefault = false
+    @Published private(set) var outputHandlesSystemSounds = false
     @Published private(set) var sampleRate = 0.0
     @Published private(set) var volume = 0.5
     @Published private(set) var volumeAvailable = false
@@ -216,22 +330,24 @@ final class AudioModel: ObservableObject {
     @Published private(set) var mediaKeysActive = false
     @Published private(set) var message = "Checking audio…"
 
-    @Published var autoSwitch: Bool {
+    @Published var autoSwitch = true {
         didSet { defaults.set(autoSwitch, forKey: Keys.autoSwitch) }
     }
-    @Published var keep48k: Bool {
+    @Published var keep48k = true {
         didSet {
             defaults.set(keep48k, forKey: Keys.keep48k)
-            if keep48k { pinRate(silent: false) }
+            if keep48k { pinSelectedRate(silent: false) }
         }
     }
 
     private enum Keys {
-        static let autoSwitch = "autoSwitchToDell"
-        static let keep48k = "keepDellAt48k"
+        static let autoSwitch = "autoSwitchToOutput"
+        static let keep48k = "keepOutputAt48k"
         static let volume = "softwareVolume"
         static let muted = "softwareMuted"
         static let mediaKeysActive = "mediaKeysActiveStatus"
+        static let selectedOutputUID = "selectedOutputUID"
+        static let selectedOutputName = "selectedOutputName"
     }
 
     private let defaults = UserDefaults.standard
@@ -240,6 +356,8 @@ final class AudioModel: ObservableObject {
     private let mediaKeyMonitor = MediaKeyMonitor()
     private let volumeHUD = VolumeHUDController()
     private var routingTimer: Timer?
+    private var preferredOutputUID: String?
+    private var preferredOutputName: String?
     private var hasRefreshed = false
     private var wasConnected = false
     private var nextEngineRetry = Date.distantPast
@@ -249,9 +367,11 @@ final class AudioModel: ObservableObject {
         || CommandLine.arguments.contains(where: { $0.hasPrefix("--self-test-gain=") })
         || CommandLine.arguments.contains("--test-built-in-route")
         || CommandLine.arguments.contains("--test-media-key-decode")
+        || CommandLine.arguments.contains("--test-output-discovery")
         || CommandLine.arguments.contains("--test-hud")
 
     private init() {
+        migrateLegacyPreferences()
         if defaults.object(forKey: Keys.autoSwitch) == nil { defaults.set(true, forKey: Keys.autoSwitch) }
         if defaults.object(forKey: Keys.keep48k) == nil { defaults.set(true, forKey: Keys.keep48k) }
         if defaults.object(forKey: Keys.volume) == nil { defaults.set(0.25, forKey: Keys.volume) }
@@ -260,11 +380,11 @@ final class AudioModel: ObservableObject {
         keep48k = defaults.bool(forKey: Keys.keep48k)
         volume = min(max(defaults.double(forKey: Keys.volume), 0), 1)
         muted = defaults.bool(forKey: Keys.muted)
+        preferredOutputUID = defaults.string(forKey: Keys.selectedOutputUID)
+        preferredOutputName = defaults.string(forKey: Keys.selectedOutputName)
 
         if !isTesting {
-            mediaKeyMonitor.onAction = { [weak self] action in
-                self?.handleMediaKey(action)
-            }
+            mediaKeyMonitor.onAction = { [weak self] action in self?.handleMediaKey(action) }
             mediaKeyMonitor.onStatusChange = { [weak self] active in
                 DispatchQueue.main.async {
                     self?.mediaKeysActive = active
@@ -288,23 +408,36 @@ final class AudioModel: ObservableObject {
     }
 
     var menuIcon: String {
-        if dellIsDefault && dellHandlesSystemSounds && softwareVolumeActive {
-            return muted ? "speaker.slash.fill" : "speaker.wave.2.fill"
-        }
-        return dellConnected ? "display" : "speaker.wave.2"
+        if outputAudioReady { return muted ? "speaker.slash.fill" : "speaker.wave.2.fill" }
+        return outputConnected ? "display" : "speaker.wave.2"
     }
 
-    var dellAudioReady: Bool {
-        dellIsDefault && dellHandlesSystemSounds && softwareVolumeActive
+    var outputAudioReady: Bool {
+        outputIsDefault && outputHandlesSystemSounds && softwareVolumeActive
+    }
+
+    var selectedOutputName: String {
+        selectedOutput?.name ?? preferredOutputName ?? "Select an output"
+    }
+
+    var selectedTransportLabel: String {
+        selectedOutput?.transportLabel ?? "External display audio"
+    }
+
+    var builtInName: String {
+        builtInDevice?.name ?? "Built-in Speakers"
     }
 
     var routeDescription: String {
-        if !dellConnected { return "Display audio disconnected" }
-        if dellAudioReady { return "Selected · software volume active" }
-        if dellIsDefault && dellHandlesSystemSounds { return "Selected · volume permission needed" }
-        if dellIsDefault { return "Selected for app audio" }
-        if dellHandlesSystemSounds { return "Split route · select Dell or MacBook" }
-        return "Connected · MacBook audio active"
+        if selectedOutput == nil, !availableOutputs.isEmpty, preferredOutputUID == nil {
+            return "Choose an external output"
+        }
+        if !outputConnected { return "Selected output is disconnected" }
+        if outputAudioReady { return "Selected · software volume active" }
+        if outputIsDefault && outputHandlesSystemSounds { return "Selected · volume permission needed" }
+        if outputIsDefault { return "Selected for application audio" }
+        if outputHandlesSystemSounds { return "Split route · select the output again" }
+        return "Connected · another output is active"
     }
 
     var rateDescription: String {
@@ -312,27 +445,68 @@ final class AudioModel: ObservableObject {
         return String(format: "%.1f kHz", sampleRate / 1_000)
     }
 
+    func isSelected(_ output: OutputDevice) -> Bool {
+        selectedOutput?.uid == output.uid || preferredOutputUID == output.uid
+    }
+
     func refreshNow() {
         refreshRouting()
     }
 
-    func selectDell(silent: Bool = false) {
+    func chooseOutput(uid: String) {
+        guard let output = availableOutputs.first(where: { $0.uid == uid }) else { return }
+        preferredOutputUID = output.uid
+        preferredOutputName = output.name
+        defaults.set(output.uid, forKey: Keys.selectedOutputUID)
+        defaults.set(output.name, forKey: Keys.selectedOutputName)
+        stopSoftwareVolume()
+        selectedOutput = output
+        activateSelectedOutput(silent: false)
+    }
+
+    func activateSelectedOutput(silent: Bool = false) {
+        let state = router.snapshot(
+            preferredUID: preferredOutputUID,
+            preferredName: preferredOutputName
+        )
+        guard let output = state.selectedOutput else {
+            message = AudioRouteError.outputUnavailable.localizedDescription
+            return
+        }
+
+        var rateWarning: String?
+        if keep48k {
+            do { try router.pinTo48k(output) }
+            catch { rateWarning = error.localizedDescription }
+        }
+
         do {
-            try router.selectDell(keep48k: keep48k)
+            stopSoftwareVolume()
+            try router.selectOutput(output)
             refreshRouting(allowAutoSwitch: false)
             startSoftwareVolume(silent: silent)
-            if !silent { message = "Audio routed directly to the Dell." }
+            if !silent {
+                message = rateWarning ?? "Audio routed to \(output.name)."
+            }
         } catch {
             message = error.localizedDescription
         }
     }
 
     func selectBuiltIn() {
+        let state = router.snapshot(
+            preferredUID: preferredOutputUID,
+            preferredName: preferredOutputName
+        )
+        guard let builtIn = state.builtInDevice else {
+            message = AudioRouteError.builtInUnavailable.localizedDescription
+            return
+        }
         do {
             stopSoftwareVolume()
-            try router.selectBuiltIn()
+            try router.selectBuiltIn(builtIn)
             refreshRouting(allowAutoSwitch: false)
-            message = "Audio routed to MacBook speakers."
+            message = "Audio routed to \(builtIn.name)."
         } catch {
             message = error.localizedDescription
         }
@@ -346,19 +520,21 @@ final class AudioModel: ObservableObject {
         }
         defaults.set(volume, forKey: Keys.volume)
         softwareVolume.setGain(effectiveGain)
-        message = "Dell software volume: \(Int((volume * 100).rounded()))%"
+        message = "Software volume: \(Int((volume * 100).rounded()))%"
     }
 
     func toggleMute() {
         muted.toggle()
         defaults.set(muted, forKey: Keys.muted)
         softwareVolume.setGain(effectiveGain)
-        message = muted ? "Dell audio muted in software." : "Dell audio unmuted."
+        message = muted ? "Audio muted in software." : "Audio unmuted."
     }
 
     func setAutoSwitch(_ enabled: Bool) {
         autoSwitch = enabled
-        if enabled && dellConnected && (!dellIsDefault || !dellHandlesSystemSounds) { selectDell() }
+        if enabled && outputConnected && (!outputIsDefault || !outputHandlesSystemSounds) {
+            activateSelectedOutput()
+        }
     }
 
     func setKeep48k(_ enabled: Bool) {
@@ -385,7 +561,7 @@ final class AudioModel: ObservableObject {
         if mediaKeysActive {
             message = "F10 mute · F11 down · F12 up"
         } else if requestPermission {
-            message = "Allow Dell Audio in Input Monitoring, then return here."
+            message = "Allow VoluMAC in Input Monitoring, then return here."
         }
     }
 
@@ -400,23 +576,42 @@ final class AudioModel: ObservableObject {
         softwareVolume.stop()
     }
 
+    func runOutputDiscoveryTest(completion: @escaping () -> Void) {
+        let state = router.snapshot(
+            preferredUID: preferredOutputUID,
+            preferredName: preferredOutputName
+        )
+        print("Compatible external outputs: \(state.availableOutputs.count)")
+        for output in state.availableOutputs {
+            print("- \(output.name) [\(output.transportLabel)] \(Int(output.sampleRate)) Hz uid=\(output.uid)")
+        }
+        print("Selected output: \(state.selectedOutput?.name ?? "none")")
+        print("OUTPUT DISCOVERY TEST: \(!state.availableOutputs.isEmpty ? "PASS" : "NO EXTERNAL OUTPUT")")
+        completion()
+    }
+
     func runHUDTest(completion: @escaping () -> Void) {
         let displayID = volumeHUD.show(volume: 0.5, muted: false, duration: 2.4)
         let builtIn = displayID.map { CGDisplayIsBuiltin($0) != 0 } ?? false
         print("HUD target display: \(displayID ?? 0)")
         print("HUD target is built-in: \(builtIn)")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-            completion()
-        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { completion() }
     }
 
     func runSelfTest(gain: Float = 0.25, completion: @escaping () -> Void) {
         do {
-            try router.selectDell(keep48k: true)
-            let state = router.snapshot()
-            guard let dell = state.dellDevice, let dellUID = state.dellUID else {
-                throw AudioRouteError.displayUnavailable
-            }
+            let state = router.snapshot(
+                preferredUID: preferredOutputUID,
+                preferredName: preferredOutputName
+            )
+            guard let output = state.selectedOutput else { throw AudioRouteError.outputUnavailable }
+            if keep48k { try? router.pinTo48k(output) }
+            try router.selectOutput(output)
+            let routedState = router.snapshot(
+                preferredUID: output.uid,
+                preferredName: output.name
+            )
+
             let testGain = min(max(gain, 0), 1)
             let player = Process()
             player.executableURL = URL(fileURLWithPath: "/usr/bin/afplay")
@@ -424,15 +619,14 @@ final class AudioModel: ObservableObject {
             try player.run()
             usleep(100_000)
             try softwareVolume.start(
-                deviceID: dell,
-                deviceUID: dellUID,
+                deviceID: output.id,
+                deviceUID: output.uid,
                 gain: testGain
             )
 
             let before = softwareVolume.metrics()
             player.waitUntilExit()
             usleep(200_000)
-
             let after = softwareVolume.metrics()
             let ratio = after.inputPeak > 0 ? after.outputPeak / after.inputPeak : 0
             let passed = after.callbackCount > before.callbackCount
@@ -440,10 +634,10 @@ final class AudioModel: ObservableObject {
                 && after.inputPeak > 0.0001
                 && abs(ratio - testGain) < 0.04
 
-            print("Dell connected: \(state.dellConnected)")
-            print("Dell default output: \(state.dellIsDefault)")
-            print("Dell system output: \(state.dellHandlesSystemSounds)")
-            print("Dell sample rate: \(state.dellRate ?? 0)")
+            print("Output: \(output.name) [\(output.transportLabel)]")
+            print("Default output: \(output.id == routedState.defaultOutput)")
+            print("System output: \(output.id == routedState.defaultSystemOutput)")
+            print("Sample rate: \(output.sampleRate)")
             print("Software-volume callbacks: \(after.callbackCount - before.callbackCount)")
             print("Non-silent frames: \(after.nonSilentFrameCount - before.nonSilentFrameCount)")
             print(String(format: "Input peak: %.5f", after.inputPeak))
@@ -458,14 +652,22 @@ final class AudioModel: ObservableObject {
     }
 
     func runBuiltInRouteTest(completion: @escaping () -> Void) {
+        let state = router.snapshot(
+            preferredUID: preferredOutputUID,
+            preferredName: preferredOutputName
+        )
         do {
             softwareVolume.stop()
-            try router.selectBuiltIn()
-            let state = router.snapshot()
             guard let builtIn = state.builtInDevice else { throw AudioRouteError.builtInUnavailable }
-            let passed = state.defaultOutput == builtIn && state.defaultSystemOutput == builtIn
-            print("Built-in default output: \(state.defaultOutput == builtIn)")
-            print("Built-in system output: \(state.defaultSystemOutput == builtIn)")
+            try router.selectBuiltIn(builtIn)
+            let after = router.snapshot(
+                preferredUID: preferredOutputUID,
+                preferredName: preferredOutputName
+            )
+            let passed = after.defaultOutput == builtIn.id
+                && after.defaultSystemOutput == builtIn.id
+            print("Built-in default output: \(after.defaultOutput == builtIn.id)")
+            print("Built-in system output: \(after.defaultSystemOutput == builtIn.id)")
             print("BUILT-IN ROUTE TEST: \(passed ? "PASS" : "FAIL")")
         } catch {
             print("BUILT-IN ROUTE TEST: FAIL — \(error.localizedDescription)")
@@ -473,26 +675,63 @@ final class AudioModel: ObservableObject {
         completion()
     }
 
+    private func migrateLegacyPreferences() {
+        guard let legacy = UserDefaults(suiteName: AppConfiguration.legacyDefaultsSuite) else { return }
+        let mappings: [(String, String)] = [
+            (Keys.autoSwitch, "autoSwitchToDell"),
+            (Keys.keep48k, "keepDellAt48k"),
+            (Keys.volume, "softwareVolume"),
+            (Keys.muted, "softwareMuted")
+        ]
+        for (newKey, oldKey) in mappings where defaults.object(forKey: newKey) == nil {
+            if let value = legacy.object(forKey: oldKey) {
+                defaults.set(value, forKey: newKey)
+            }
+        }
+    }
+
+    private func persistSelection(_ output: OutputDevice) {
+        preferredOutputUID = output.uid
+        preferredOutputName = output.name
+        defaults.set(output.uid, forKey: Keys.selectedOutputUID)
+        defaults.set(output.name, forKey: Keys.selectedOutputName)
+    }
+
     private func refreshRouting(allowAutoSwitch: Bool = true) {
-        let state = router.snapshot()
-        let connectedTransition = state.dellConnected && !wasConnected
+        let state = router.snapshot(
+            preferredUID: preferredOutputUID,
+            preferredName: preferredOutputName
+        )
+        let connectedTransition = state.outputConnected && !wasConnected
         let initial = !hasRefreshed
 
-        dellConnected = state.dellConnected
-        dellIsDefault = state.dellIsDefault
-        dellHandlesSystemSounds = state.dellHandlesSystemSounds
-        sampleRate = state.dellRate ?? 0
-        wasConnected = state.dellConnected
+        availableOutputs = state.availableOutputs
+        selectedOutput = state.selectedOutput
+        builtInDevice = state.builtInDevice
+        outputConnected = state.outputConnected
+        outputIsDefault = state.outputIsDefault
+        outputHandlesSystemSounds = state.outputHandlesSystemSounds
+        sampleRate = state.selectedOutput?.sampleRate ?? 0
+        wasConnected = state.outputConnected
         hasRefreshed = true
 
-        let routeIsSplit = !state.dellIsDefault || !state.dellHandlesSystemSounds
-        if allowAutoSwitch && autoSwitch && state.dellConnected && routeIsSplit && (initial || connectedTransition) {
-            selectDell(silent: true)
-        } else if keep48k && state.dellConnected && (initial || connectedTransition) {
-            pinRate(silent: true)
+        if let output = state.selectedOutput,
+           preferredOutputUID != output.uid || preferredOutputName != output.name {
+            persistSelection(output)
         }
 
-        if state.dellIsDefault {
+        let routeIsSplit = !state.outputIsDefault || !state.outputHandlesSystemSounds
+        if allowAutoSwitch,
+           autoSwitch,
+           state.outputConnected,
+           routeIsSplit,
+           (initial || connectedTransition) {
+            activateSelectedOutput(silent: true)
+        } else if keep48k, state.outputConnected, (initial || connectedTransition) {
+            pinSelectedRate(silent: true)
+        }
+
+        if state.outputIsDefault {
             if !softwareVolume.isActive && Date() >= nextEngineRetry && !isTesting {
                 startSoftwareVolume(silent: true)
             }
@@ -502,11 +741,9 @@ final class AudioModel: ObservableObject {
 
         if softwareVolume.isActive && !isTesting {
             let callbackCount = softwareVolume.metrics().callbackCount
-            if callbackCount == lastCallbackCount {
-                stalledCallbackChecks += 1
-            } else {
-                stalledCallbackChecks = 0
-            }
+            stalledCallbackChecks = callbackCount == lastCallbackCount
+                ? stalledCallbackChecks + 1
+                : 0
             lastCallbackCount = callbackCount
             if stalledCallbackChecks >= 2 {
                 stopSoftwareVolume()
@@ -516,7 +753,11 @@ final class AudioModel: ObservableObject {
         }
 
         if message == "Checking audio…" {
-            message = state.dellConnected ? "Preparing software volume…" : "Waiting for the Dell display"
+            message = state.outputConnected
+                ? "Preparing software volume…"
+                : (state.availableOutputs.isEmpty
+                    ? "No compatible external output detected"
+                    : "Choose an external output")
         }
     }
 
@@ -527,12 +768,9 @@ final class AudioModel: ObservableObject {
     private func handleMediaKey(_ action: MediaKeyAction) {
         let step = action.fineAdjustment ? 1.0 / 64.0 : 1.0 / 16.0
         switch action.command {
-        case .mute:
-            toggleMute()
-        case .volumeDown:
-            setVolumeFromUI(max(0, volume - step))
-        case .volumeUp:
-            setVolumeFromUI(min(1, volume + step))
+        case .mute: toggleMute()
+        case .volumeDown: setVolumeFromUI(max(0, volume - step))
+        case .volumeUp: setVolumeFromUI(min(1, volume + step))
         }
         volumeHUD.show(volume: volume, muted: muted)
     }
@@ -543,16 +781,19 @@ final class AudioModel: ObservableObject {
     }
 
     private func startSoftwareVolume(silent: Bool) {
-        let state = router.snapshot()
-        guard let dell = state.dellDevice, let dellUID = state.dellUID, state.dellIsDefault else {
+        let state = router.snapshot(
+            preferredUID: preferredOutputUID,
+            preferredName: preferredOutputName
+        )
+        guard let output = state.selectedOutput, state.outputIsDefault else {
             stopSoftwareVolume()
             return
         }
         volumeLoading = true
         do {
             try softwareVolume.start(
-                deviceID: dell,
-                deviceUID: dellUID,
+                deviceID: output.id,
+                deviceUID: output.uid,
                 gain: effectiveGain
             )
             softwareVolumeActive = true
@@ -561,7 +802,7 @@ final class AudioModel: ObservableObject {
             nextEngineRetry = .distantPast
             lastCallbackCount = softwareVolume.metrics().callbackCount
             stalledCallbackChecks = 0
-            if !silent { message = "Software volume is active for Dell audio." }
+            if !silent { message = "Software volume is active for \(output.name)." }
             else if message == "Checking audio…" || message == "Preparing software volume…" {
                 message = "Ready · software volume active, no virtual driver"
             }
@@ -583,27 +824,28 @@ final class AudioModel: ObservableObject {
         stalledCallbackChecks = 0
     }
 
-    private func pinRate(silent: Bool) {
+    private func pinSelectedRate(silent: Bool) {
+        guard let output = selectedOutput else { return }
         do {
-            try router.pinDellTo48k()
-            sampleRate = Product.preferredRate
-            if !silent { message = "Dell fixed at 48 kHz." }
+            try router.pinTo48k(output)
+            sampleRate = AppConfiguration.preferredRate
+            if !silent { message = "\(output.name) is set to 48 kHz." }
         } catch {
             if !silent { message = error.localizedDescription }
         }
     }
 }
 
-private struct DellAudioView: View {
+private struct VoluMACView: View {
     @ObservedObject var model: AudioModel
 
     private var statusColor: Color {
-        if model.dellAudioReady { return .green }
-        return model.dellConnected ? .orange : .red
+        if model.outputAudioReady { return .green }
+        return model.outputConnected ? .orange : .red
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 15) {
             HStack(spacing: 12) {
                 ZStack {
                     RoundedRectangle(cornerRadius: 10)
@@ -614,13 +856,14 @@ private struct DellAudioView: View {
                         .foregroundStyle(Color.accentColor)
                 }
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Dell Audio")
+                    Text("VoluMAC")
                         .font(.headline)
                     HStack(spacing: 6) {
                         Circle().fill(statusColor).frame(width: 7, height: 7)
                         Text(model.routeDescription)
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                            .lineLimit(1)
                     }
                 }
                 Spacer()
@@ -629,14 +872,53 @@ private struct DellAudioView: View {
                     .foregroundStyle(.secondary)
             }
 
+            Menu {
+                if model.availableOutputs.isEmpty {
+                    Text("No compatible external outputs")
+                } else {
+                    ForEach(model.availableOutputs) { output in
+                        Button {
+                            model.chooseOutput(uid: output.uid)
+                        } label: {
+                            Label(
+                                "\(output.name) · \(output.transportLabel)",
+                                systemImage: model.isSelected(output)
+                                    ? "checkmark.circle.fill"
+                                    : "display"
+                            )
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "display")
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(model.selectedOutputName)
+                            .font(.subheadline.weight(.semibold))
+                            .lineLimit(1)
+                        Text(model.selectedTransportLabel)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(10)
+                .background(.quaternary.opacity(0.65), in: RoundedRectangle(cornerRadius: 10))
+            }
+            .menuStyle(.borderlessButton)
+            .disabled(model.availableOutputs.isEmpty)
+
             Button {
-                model.selectDell()
+                model.activateSelectedOutput()
             } label: {
                 Label(
-                    model.dellAudioReady
-                        ? "Dell audio + volume are active"
-                        : "Use Dell for All Audio",
-                    systemImage: model.dellAudioReady
+                    model.outputAudioReady
+                        ? "Selected output + volume are active"
+                        : "Use Selected Output for All Audio",
+                    systemImage: model.outputAudioReady
                         ? "checkmark.circle.fill"
                         : "speaker.arrow.circlepath"
                 )
@@ -644,7 +926,7 @@ private struct DellAudioView: View {
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
-            .disabled(!model.dellConnected || model.dellAudioReady)
+            .disabled(!model.outputConnected || model.outputAudioReady)
 
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
@@ -666,7 +948,7 @@ private struct DellAudioView: View {
                             .frame(width: 18)
                     }
                     .buttonStyle(.plain)
-                    .help(model.muted ? "Unmute Dell" : "Mute Dell")
+                    .help(model.muted ? "Unmute selected output" : "Mute selected output")
                     Slider(
                         value: Binding(
                             get: { model.volume },
@@ -674,7 +956,7 @@ private struct DellAudioView: View {
                         ),
                         in: 0...1
                     )
-                    .disabled(!model.dellConnected || !model.volumeAvailable)
+                    .disabled(!model.outputConnected || !model.volumeAvailable)
                 }
             }
             .padding(12)
@@ -682,11 +964,11 @@ private struct DellAudioView: View {
 
             VStack(alignment: .leading, spacing: 9) {
                 Toggle(
-                    "Use Dell automatically when connected",
+                    "Use selected output automatically",
                     isOn: Binding(get: { model.autoSwitch }, set: { model.setAutoSwitch($0) })
                 )
                 Toggle(
-                    "Keep Dell at 48 kHz",
+                    "Keep selected output at 48 kHz",
                     isOn: Binding(get: { model.keep48k }, set: { model.setKeep48k($0) })
                 )
                 HStack {
@@ -714,7 +996,8 @@ private struct DellAudioView: View {
 
             HStack {
                 Menu {
-                    Button("Use MacBook Speakers") { model.selectBuiltIn() }
+                    Button("Use \(model.builtInName)") { model.selectBuiltIn() }
+                        .disabled(model.builtInDevice == nil)
                     Button("Open Sound Settings") { model.openSoundSettings() }
                     Button("Open Audio Privacy Settings") { model.openAudioPrivacySettings() }
                     Button("Open Input Monitoring Settings") { model.openInputMonitoringSettings() }
@@ -736,7 +1019,7 @@ private struct DellAudioView: View {
             }
         }
         .padding(18)
-        .frame(width: 330)
+        .frame(width: 350)
         .onAppear { model.refreshNow() }
     }
 }
@@ -744,26 +1027,20 @@ private struct DellAudioView: View {
 private final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         if CommandLine.arguments.contains("--self-test") {
-            AudioModel.shared.runSelfTest {
-                NSApplication.shared.terminate(nil)
-            }
+            AudioModel.shared.runSelfTest { NSApplication.shared.terminate(nil) }
         } else if let argument = CommandLine.arguments.first(where: { $0.hasPrefix("--self-test-gain=") }),
                   let gain = Float(argument.split(separator: "=", maxSplits: 1).last ?? "") {
-            AudioModel.shared.runSelfTest(gain: gain) {
-                NSApplication.shared.terminate(nil)
-            }
+            AudioModel.shared.runSelfTest(gain: gain) { NSApplication.shared.terminate(nil) }
         } else if CommandLine.arguments.contains("--test-built-in-route") {
-            AudioModel.shared.runBuiltInRouteTest {
-                NSApplication.shared.terminate(nil)
-            }
+            AudioModel.shared.runBuiltInRouteTest { NSApplication.shared.terminate(nil) }
         } else if CommandLine.arguments.contains("--test-media-key-decode") {
             let passed = MediaKeyMonitor.runDecodeSelfTest()
             print("MEDIA KEY DECODE TEST: \(passed ? "PASS" : "FAIL")")
             NSApplication.shared.terminate(nil)
+        } else if CommandLine.arguments.contains("--test-output-discovery") {
+            AudioModel.shared.runOutputDiscoveryTest { NSApplication.shared.terminate(nil) }
         } else if CommandLine.arguments.contains("--test-hud") {
-            AudioModel.shared.runHUDTest {
-                NSApplication.shared.terminate(nil)
-            }
+            AudioModel.shared.runHUDTest { NSApplication.shared.terminate(nil) }
         }
     }
 
@@ -773,16 +1050,16 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 @main
-private struct DellAudioMenuApp: App {
+private struct VoluMACApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var model = AudioModel.shared
 
     var body: some Scene {
         MenuBarExtra {
-            DellAudioView(model: model)
+            VoluMACView(model: model)
         } label: {
             Image(systemName: model.menuIcon)
-                .accessibilityLabel("Dell Audio")
+                .accessibilityLabel("VoluMAC")
         }
         .menuBarExtraStyle(.window)
     }

@@ -58,14 +58,16 @@ final class SoftwareVolumeController {
         let description = CATapDescription(
             stereoGlobalTapButExcludeProcesses: excluded
         )
-        description.name = "Dell Audio software volume"
+        description.name = "VoluMAC software volume"
         description.isPrivate = true
         description.muteBehavior = CATapMuteBehavior(rawValue: 2) ?? description.muteBehavior
         description.isMixdown = true
         description.isMono = false
         description.isExclusive = true
         if #available(macOS 26.0, *) {
-            description.bundleIDs = [Bundle.main.bundleIdentifier ?? "local.dellaudio.menu"]
+            description.bundleIDs = [
+                Bundle.main.bundleIdentifier ?? "io.github.utsabfdahal.volumac"
+            ]
             description.isProcessRestoreEnabled = true
         }
 
@@ -78,9 +80,9 @@ final class SoftwareVolumeController {
 
         do {
             let tapUID = try readTapUID(newTapID)
-            let aggregateUID = "local.dellaudio.private.\(UUID().uuidString)"
+            let aggregateUID = "io.github.utsabfdahal.volumac.private.\(UUID().uuidString)"
             let composition: [String: Any] = [
-                kAudioAggregateDeviceNameKey: "Dell Audio Private Engine",
+                kAudioAggregateDeviceNameKey: "VoluMAC Private Engine",
                 kAudioAggregateDeviceUIDKey: aggregateUID,
                 kAudioAggregateDeviceIsPrivateKey: true as NSNumber,
                 kAudioAggregateDeviceIsStackedKey: false as NSNumber,
@@ -254,7 +256,7 @@ final class SoftwareVolumeController {
             deviceID,
             selector: kAudioAggregateDevicePropertyTapList
         )
-        fputs("Dell Audio aggregate diagnostics:\n", stderr)
+        fputs("VoluMAC aggregate diagnostics:\n", stderr)
         fputs("  input streams: \(input)\n", stderr)
         fputs("  output streams: \(output)\n", stderr)
         fputs("  global streams: \(global)\n", stderr)

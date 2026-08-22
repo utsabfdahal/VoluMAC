@@ -75,7 +75,7 @@ final class VolumeHUDController {
             backing: .buffered,
             defer: false
         )
-        panel.title = "Dell Audio Volume HUD"
+        panel.title = "VoluMAC Volume HUD"
         panel.contentView = NSHostingView(rootView: VolumeHUDView(state: state))
         panel.backgroundColor = .clear
         panel.isOpaque = false

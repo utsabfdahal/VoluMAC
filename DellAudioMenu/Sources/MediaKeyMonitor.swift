@@ -15,7 +15,7 @@ struct MediaKeyAction: Equatable {
     let fineAdjustment: Bool
 }
 
-private func dellAudioMediaKeyCallback(
+private func voluMACMediaKeyCallback(
     proxy: CGEventTapProxy,
     type: CGEventType,
     event: CGEvent,
@@ -56,7 +56,7 @@ final class MediaKeyMonitor {
             place: .headInsertEventTap,
             options: .listenOnly,
             eventsOfInterest: eventMask,
-            callback: dellAudioMediaKeyCallback,
+            callback: voluMACMediaKeyCallback,
             userInfo: Unmanaged.passUnretained(self).toOpaque()
         ), let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0) else {
             onStatusChange?(false)
