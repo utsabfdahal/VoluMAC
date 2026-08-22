@@ -49,11 +49,10 @@ Many HDMI and DisplayPort audio devices expose playback but no writable Core Aud
 
 Software volume can only attenuate. Set the monitor’s physical OSD volume to a comfortable upper limit; VoluMAC cannot amplify beyond that hardware level.
 
-## Requirements
+## Requirements      
 
-- Apple-silicon Mac (`arm64` build target)
 - macOS 14.2 or newer (Core Audio process taps)
-- Xcode Command Line Tools with Swift and Clang
+- Apple-silicon Mac (`arm64` build target)
 - A stereo PCM output capable of 48 kHz
 - Tested on:
   - M1 MacBook Air
@@ -61,13 +60,30 @@ Software volume can only attenuate. Set the monitor’s physical OSD volume to a
   - HDMI monitor with integrated speakers
   - 2-channel HDMI audio at 48 kHz
 
-Install Command Line Tools if needed:
+The prebuilt installer does **not** require Xcode, Command Line Tools, Homebrew, or any other development software.
+
+## Install the prebuilt package
+
+1. Download `VoluMAC-3.0.0.pkg` and `VoluMAC-3.0.0.pkg.sha256` from the [latest GitHub release](https://github.com/utsabfdahal/VoluMAC/releases/latest).
+2. Optionally verify the download from the containing directory:
+
+  ```sh
+  shasum -a 256 -c VoluMAC-3.0.0.pkg.sha256
+  ```
+
+3. Open the package and complete the standard macOS Installer flow. It installs VoluMAC in `/Applications` and starts it automatically at login.
+4. Grant **Screen & System Audio Recording** and **Input Monitoring** when macOS requests them.
+
+> [!WARNING]
+> This initial package is reproducibly built from the public source but is not yet Developer ID signed or Apple-notarized because no Developer ID Application/Installer certificates are available. macOS may show an unidentified-developer warning. Verify the published SHA-256 checksum, then use **System Settings → Privacy & Security → Open Anyway** if you trust the source and release artifact. A frictionless double-click install requires an Apple Developer Program Developer ID certificate and notarization.
+
+## Build from source
+
+Only contributors rebuilding the app or installer need Xcode Command Line Tools with Swift and Clang:
 
 ```sh
 xcode-select --install
 ```
-
-## Build
 
 From the repository root:
 
@@ -87,7 +103,7 @@ Run the build directly for development:
 open "DellAudioMenu/build/VoluMAC.app"
 ```
 
-## Install
+### Install a source build for the current user
 
 The supplied LaunchAgent is a template containing `__HOME__`. The following installation commands substitute the current user’s home directory:
 
@@ -111,6 +127,14 @@ Manual launch:
 ```sh
 open "$HOME/Applications/VoluMAC.app"
 ```
+
+### Build the installer package
+
+```sh
+./DellAudioMenu/package.sh
+```
+
+Artifacts are written to `DellAudioMenu/dist/` and are ignored by Git.
 
 ## Permissions
 
@@ -279,6 +303,13 @@ DellAudioMenu/
 ├── Info.plist
 ├── build.sh
 ├── io.github.utsabfdahal.volumac.plist
+├── package.sh
+├── Packaging/
+│   ├── components.plist
+│   ├── io.github.utsabfdahal.volumac.plist
+│   └── scripts/
+│       ├── preinstall
+│       └── postinstall
 └── Sources/
     ├── VoluMACApp.swift
     ├── VoluMAC-Bridging-Header.h
@@ -292,6 +323,19 @@ DellAudioMenu/
 Additional root-level Swift files are diagnostic utilities used while investigating HDMI clock issues. `report.txt` and `.env` are deliberately ignored because they may contain machine identifiers or secrets.
 
 ## Uninstall
+
+For an installation made by the `.pkg` release:
+
+```sh
+launchctl bootout "gui/$(id -u)/io.github.utsabfdahal.volumac" 2>/dev/null || true
+sudo rm -f "/Library/LaunchAgents/io.github.utsabfdahal.volumac.plist"
+sudo rm -rf "/Applications/VoluMAC.app"
+sudo pkgutil --forget io.github.utsabfdahal.volumac.installer
+defaults delete io.github.utsabfdahal.volumac 2>/dev/null || true
+tccutil reset ListenEvent io.github.utsabfdahal.volumac
+```
+
+For a source build installed in the current user’s home directory:
 
 ```sh
 launchctl bootout "gui/$(id -u)/io.github.utsabfdahal.volumac" 2>/dev/null || true
