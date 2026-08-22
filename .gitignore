@@ -1,0 +1,44 @@
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+
+# Machine-specific diagnostic captures
+report.txt
+*.report.txt
+*.diagnostic.txt
+
+# Build products
+DellAudioMenu/build/
+.build/
+DerivedData/
+*.app/
+*.dSYM/
+*.o
+*.swiftmodule
+*.swiftdoc
+*.swiftsourceinfo
+
+# Runtime output
+*.log
+*.pid
+
+# Xcode / Swift user state
+xcuserdata/
+*.xcuserstate
+.swiftpm/
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# macOS metadata
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
