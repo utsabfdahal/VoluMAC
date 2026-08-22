@@ -1,0 +1,22 @@
+#!/bin/zsh
+
+console_user=$(/usr/bin/stat -f '%Su' /dev/console 2>/dev/null)
+case "$console_user" in
+    ""|root|loginwindow|_mbsetupuser) exit 0 ;;
+esac
+
+user_id=$(/usr/bin/id -u "$console_user" 2>/dev/null) || exit 0
+user_home=$(/usr/bin/dscl . -read "/Users/$console_user" NFSHomeDirectory 2>/dev/null | /usr/bin/awk '{print $2}')
+
+if [[ -n "$user_home" ]]; then
+    /bin/rm -f "$user_home/Library/LaunchAgents/io.github.utsabfdahal.volumac.plist"
+    /bin/rm -f "$user_home/Library/LaunchAgents/local.dellaudio.menu.plist"
+    /bin/rm -rf "$user_home/Applications/VoluMAC.app"
+    /bin/rm -rf "$user_home/Applications/Dell Audio.app"
+fi
+
+agent=/Library/LaunchAgents/io.github.utsabfdahal.volumac.plist
+/bin/launchctl bootout "gui/$user_id/io.github.utsabfdahal.volumac" 2>/dev/null || true
+/bin/launchctl bootstrap "gui/$user_id" "$agent" 2>/dev/null || true
+/bin/launchctl kickstart -k "gui/$user_id/io.github.utsabfdahal.volumac" 2>/dev/null || true
+exit 0

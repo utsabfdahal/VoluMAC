@@ -10,6 +10,7 @@ report.txt
 
 # Build products
 DellAudioMenu/build/
+DellAudioMenu/dist/
 .build/
 DerivedData/
 *.app/

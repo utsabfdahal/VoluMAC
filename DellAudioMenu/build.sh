@@ -6,12 +6,14 @@ BUILD="$ROOT/build"
 APP="$BUILD/VoluMAC.app"
 CONTENTS="$APP/Contents"
 MACOS="$CONTENTS/MacOS"
+RESOURCES="$CONTENTS/Resources"
 SOURCES="$ROOT/Sources"
 ENGINE_OBJECT="$BUILD/SoftwareVolumeEngine.o"
 
 rm -rf "$BUILD"
-mkdir -p "$MACOS" "$BUILD"
+mkdir -p "$MACOS" "$RESOURCES" "$BUILD"
 cp "$ROOT/Info.plist" "$CONTENTS/Info.plist"
+cp "$ROOT:h/LICENSE" "$RESOURCES/LICENSE"
 
 xcrun clang++ \
     -std=c++17 \
