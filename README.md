@@ -1,16 +1,18 @@
 # VoluMAC
 
-VoluMAC is a lightweight native menu-bar utility that routes macOS audio to a Dell HDMI/DisplayPort monitor and provides software volume control when the display exposes no writable Core Audio volume control. The current app bundle and menu-bar product are named **Dell Audio**.
+VoluMAC is a lightweight native menu-bar utility that routes macOS audio to a selected external display or physical audio output and provides software volume control when that device exposes no writable Core Audio volume control.
 
-It is designed for **Dell monitors with integrated speakers connected to an Apple-silicon Mac**, while the Core Audio processing design can be generalized to other external PCM audio devices.
+It supports wired HDMI, DisplayPort, Thunderbolt, and USB display audio on Apple-silicon Macs. Other non-virtual physical outputs may also appear in the selector when Core Audio reports them as compatible.
 
 > [!IMPORTANT]
-> The current device selection targets output names containing `DELL`. Review `Product.displayMatch` in `DellAudioMenu.swift` before using it with a non-Dell monitor.
+> VoluMAC lists compatible connected outputs and remembers the selected device by Core Audio UID, with a device-name fallback for displays whose UID changes after reconnecting or changing ports. Bluetooth, AirPlay, virtual, aggregate, and built-in devices are intentionally excluded from the external-output selector.
 
 ## Features
 
-- Selects the Dell for both application audio and system sounds.
-- Keeps the Dell at 48 kHz when selected.
+- Lists compatible connected external outputs and lets the user choose one.
+- Selects the chosen output for both application audio and system sounds.
+- Remembers the selection across reconnects and UID changes.
+- Optionally keeps the selected output at 48 kHz when supported.
 - Provides software volume attenuation from 0–100% without a virtual HAL driver.
 - Handles global media keys:
   - **F10** — mute/unmute
@@ -31,21 +33,21 @@ flowchart LR
     B --> C[Private global stereo tap]
     C --> D[Private aggregate device]
     D --> E[Real-time Float32 gain callback]
-    E --> F[Dell HDMI output at 48 kHz]
+    E --> F[Selected physical output]
     G[F10 / F11 / F12] --> H[Atomic software gain]
     G --> I[HUD on built-in display]
     H --> E
 ```
 
-The app keeps the physical Dell as the visible default output. A private `CATapDescription` captures the outgoing PCM mix and uses `.mutedWhenTapped`, so the original unscaled signal is muted only while the app is actively reading the tap. The Dell and tap share a private aggregate-device clock, and a small Objective-C++ real-time callback applies gain directly to the output buffers.
+The app keeps the selected physical device as the visible default output. A private `CATapDescription` captures the outgoing PCM mix and uses `.mutedWhenTapped`, so the original unscaled signal is muted only while the app is actively reading the tap. The selected device and tap share a private aggregate-device clock, and a small Objective-C++ real-time callback applies gain directly to the output buffers.
 
 The callback does not allocate memory, log, acquire locks, or invoke UI code. Swift/AppKit owns the menu and control state; the real-time gain is stored atomically.
 
 ### Why software volume?
 
-Some Dell monitor HDMI audio devices expose playback but no writable Core Audio volume or mute property. On the tested DP-to-HDMI path, direct DDC/CI commands also fail. Software attenuation is therefore applied before samples reach the monitor.
+Many HDMI and DisplayPort audio devices expose playback but no writable Core Audio volume or mute property. Software attenuation is therefore applied before samples reach the selected output.
 
-Software volume can only attenuate. Set the monitor’s physical OSD volume to a comfortable upper limit; Dell Audio cannot amplify beyond that hardware level.
+Software volume can only attenuate. Set the monitor’s physical OSD volume to a comfortable upper limit; VoluMAC cannot amplify beyond that hardware level.
 
 ## Requirements
 
@@ -56,7 +58,7 @@ Software volume can only attenuate. Set the monitor’s physical OSD volume to a
 - Tested on:
   - M1 MacBook Air
   - macOS 26.4
-  - Dell monitor with integrated speakers
+  - HDMI monitor with integrated speakers
   - 2-channel HDMI audio at 48 kHz
 
 Install Command Line Tools if needed:
@@ -76,13 +78,13 @@ From the repository root:
 The ad-hoc-signed app is produced at:
 
 ```text
-DellAudioMenu/build/Dell Audio.app
+DellAudioMenu/build/VoluMAC.app
 ```
 
 Run the build directly for development:
 
 ```sh
-open "DellAudioMenu/build/Dell Audio.app"
+open "DellAudioMenu/build/VoluMAC.app"
 ```
 
 ## Install
@@ -92,30 +94,33 @@ The supplied LaunchAgent is a template containing `__HOME__`. The following inst
 ```sh
 mkdir -p "$HOME/Applications"
 mkdir -p "$HOME/Library/LaunchAgents"
-rm -rf "$HOME/Applications/Dell Audio.app"
-ditto "DellAudioMenu/build/Dell Audio.app" "$HOME/Applications/Dell Audio.app"
-sed "s#__HOME__#$HOME#g" "DellAudioMenu/local.dellaudio.menu.plist" > "$HOME/Library/LaunchAgents/local.dellaudio.menu.plist"
-plutil -lint "$HOME/Library/LaunchAgents/local.dellaudio.menu.plist"
 launchctl bootout "gui/$(id -u)/local.dellaudio.menu" 2>/dev/null || true
-launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/local.dellaudio.menu.plist"
-launchctl kickstart -k "gui/$(id -u)/local.dellaudio.menu"
+rm -f "$HOME/Library/LaunchAgents/local.dellaudio.menu.plist"
+rm -rf "$HOME/Applications/Dell Audio.app"
+rm -rf "$HOME/Applications/VoluMAC.app"
+ditto "DellAudioMenu/build/VoluMAC.app" "$HOME/Applications/VoluMAC.app"
+sed "s#__HOME__#$HOME#g" "DellAudioMenu/io.github.utsabfdahal.volumac.plist" > "$HOME/Library/LaunchAgents/io.github.utsabfdahal.volumac.plist"
+plutil -lint "$HOME/Library/LaunchAgents/io.github.utsabfdahal.volumac.plist"
+launchctl bootout "gui/$(id -u)/io.github.utsabfdahal.volumac" 2>/dev/null || true
+launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/io.github.utsabfdahal.volumac.plist"
+launchctl kickstart -k "gui/$(id -u)/io.github.utsabfdahal.volumac"
 ```
 
 Manual launch:
 
 ```sh
-open "$HOME/Applications/Dell Audio.app"
+open "$HOME/Applications/VoluMAC.app"
 ```
 
 ## Permissions
 
-Dell Audio requests two macOS privacy permissions. Processing remains local on the Mac.
+VoluMAC requests two macOS privacy permissions. Processing remains local on the Mac.
 
 ### Screen & System Audio Recording
 
 Required by the public Core Audio tap API. The app does not save, upload, or transmit captured audio; it only scales samples and immediately writes them to the selected output.
 
-Enable Dell Audio in:
+Enable VoluMAC in:
 
 **System Settings → Privacy & Security → Screen & System Audio Recording**
 
@@ -123,53 +128,60 @@ Enable Dell Audio in:
 
 Required for global F10/F11/F12 handling. The event tap is listen-only and processes only mute/volume media events and the F10–F12 fallback keycodes.
 
-Enable Dell Audio in:
+Enable VoluMAC in:
 
 **System Settings → Privacy & Security → Input Monitoring**
 
 Because local builds are ad-hoc signed, replacing the executable changes its code hash. If media keys stop working after rebuilding, reset only this app’s Input Monitoring decision, restart it, and grant access again:
 
 ```sh
-tccutil reset ListenEvent local.dellaudio.menu
+tccutil reset ListenEvent io.github.utsabfdahal.volumac
 ```
 
 ## Usage
 
-1. Connect and power on the Dell display.
-2. Start Dell Audio or log in with the LaunchAgent installed.
+1. Connect and power on the external display or output.
+2. Start VoluMAC or log in with the LaunchAgent installed.
 3. Click the speaker/display icon in the menu bar.
-4. Select **Use Dell for All Audio** if it is not already selected.
-5. Use the slider, mute button, or F10/F11/F12.
+4. Choose an output from the selector.
+5. Select **Use Selected Output for All Audio** if it is not already active.
+6. Use the slider, mute button, or F10/F11/F12.
 
 Normal volume steps are `1/16` (6.25%). Option+Shift uses `1/64` (1.5625%) steps.
 
-The HUD is deliberately placed on the active built-in MacBook display using `CGDisplayIsBuiltin`, even when the Dell is the main display. If no built-in display is active (for example, clamshell mode), it falls back to the current main screen.
+The HUD is deliberately placed on the active built-in MacBook display using `CGDisplayIsBuiltin`, even when an external display is the main screen. If no built-in display is active (for example, clamshell mode), it falls back to the current main screen.
 
 ## Tests
 
 Stop the login instance before running executable tests so only one tap owns the output:
 
 ```sh
-launchctl bootout "gui/$(id -u)/local.dellaudio.menu" 2>/dev/null || true
-pkill -x DellAudioMenu 2>/dev/null || true
+launchctl bootout "gui/$(id -u)/io.github.utsabfdahal.volumac" 2>/dev/null || true
+pkill -x VoluMAC 2>/dev/null || true
 ```
 
 Set a test app variable:
 
 ```sh
-APP="$PWD/DellAudioMenu/build/Dell Audio.app"
+APP="$PWD/DellAudioMenu/build/VoluMAC.app"
 ```
 
 Test media-key decoding without requesting Input Monitoring:
 
 ```sh
-"$APP/Contents/MacOS/DellAudioMenu" --test-media-key-decode
+"$APP/Contents/MacOS/VoluMAC" --test-media-key-decode
+```
+
+List detected compatible outputs and the remembered selection:
+
+```sh
+"$APP/Contents/MacOS/VoluMAC" --test-output-discovery
 ```
 
 Measure real audio attenuation. This plays a short built-in sound and compares input/output peaks:
 
 ```sh
-"$APP/Contents/MacOS/DellAudioMenu" --self-test-gain=0.25
+"$APP/Contents/MacOS/VoluMAC" --self-test-gain=0.25
 ```
 
 Expected measured gain is approximately `0.250`.
@@ -177,13 +189,13 @@ Expected measured gain is approximately `0.250`.
 Test the built-in-speaker fallback. This intentionally leaves both output selectors on the MacBook speakers:
 
 ```sh
-"$APP/Contents/MacOS/DellAudioMenu" --test-built-in-route
+"$APP/Contents/MacOS/VoluMAC" --test-built-in-route
 ```
 
 Show the HUD on the built-in display for three seconds:
 
 ```sh
-"$APP/Contents/MacOS/DellAudioMenu" --test-hud
+"$APP/Contents/MacOS/VoluMAC" --test-hud
 ```
 
 Validate the package:
@@ -197,15 +209,15 @@ plutil -lint "$APP/Contents/Info.plist"
 
 ### YouTube volume does not change
 
-- Confirm Dell Audio says **software volume active**.
-- Confirm the Dell is both the default output and default system output.
+- Confirm VoluMAC says **software volume active**.
+- Confirm the selected device is both the default output and default system output.
 - Confirm Screen & System Audio Recording access is enabled.
-- Quit any duplicate Dell Audio processes; only one instance should run.
+- Quit any duplicate VoluMAC processes; only one instance should run.
 - Restart the LaunchAgent.
 
 ```sh
-pgrep -fl DellAudioMenu
-launchctl kickstart -k "gui/$(id -u)/local.dellaudio.menu"
+pgrep -fl VoluMAC
+launchctl kickstart -k "gui/$(id -u)/io.github.utsabfdahal.volumac"
 ```
 
 ### F10/F11/F12 do not work
@@ -215,27 +227,27 @@ launchctl kickstart -k "gui/$(id -u)/local.dellaudio.menu"
 - The menu displays whether media keys are enabled.
 
 ```sh
-tccutil reset ListenEvent local.dellaudio.menu
+tccutil reset ListenEvent io.github.utsabfdahal.volumac
 open "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent"
 ```
 
 ### One key press changes two steps
 
-Version 2.1 and newer deduplicates the paired system-defined and raw F-key events emitted by Apple keyboards. Ensure only one Dell Audio process is running and that the installed app is current.
+Version 3.0 and newer deduplicates the paired system-defined and raw F-key events emitted by Apple keyboards. Ensure only one VoluMAC process is running and that the installed app is current.
 
 ### The HUD appears on the wrong display
 
 The app prefers the built-in display. In clamshell mode, macOS reports no active built-in screen, so the HUD uses the main external screen instead.
 
-### Dell remains visible but produces no audio
+### A display remains visible but produces no audio
 
 If `afplay` fails with `AudioQueueStart failed ('stop')` and Core Audio logs say it could not establish a timeline after 10 seconds, the Apple-silicon DCP HDMI audio clock is wedged. Restarting `coreaudiod`, changing sample rate, cable replugging, monitor power cycling, and display mode changes may not clear that state. A Mac reboot is the confirmed recovery for this hardware/OS combination.
 
-Dell Audio cannot repair a kernel/DCP clock hang, though keeping one 48 kHz path and removing virtual HAL drivers reduces audio-stack churn.
+VoluMAC cannot repair a kernel/DCP clock hang, though keeping one 48 kHz path and removing virtual HAL drivers reduces audio-stack churn.
 
-### The monitor is not found
+### An output is not listed
 
-Update the `Product` constants in `DellAudioMenu/Sources/DellAudioMenu.swift`. Do not hard-code a Core Audio device UID: the Dell UID changed across EDID/port states during testing. Find by display name, then read the current UID from Core Audio.
+VoluMAC lists non-virtual, non-Bluetooth physical outputs reported by Core Audio, including HDMI, DisplayPort, Thunderbolt, and USB. AirPlay is excluded because it cannot reliably share the private aggregate-device clock. Use `--test-output-discovery` to inspect candidates. Do not hard-code a Core Audio device UID; VoluMAC remembers both UID and name because display UIDs can change across EDID or port states.
 
 ## Safety and privacy
 
@@ -252,7 +264,8 @@ The tap is fail-open: if the processing reader disappears unexpectedly, Core Aud
 
 ## Known limitations
 
-- Target matching is currently Dell-specific.
+- Bluetooth and AirPlay outputs are excluded from the external-output selector.
+- Not every physical audio driver supports private aggregate devices.
 - The build script emits arm64 binaries only.
 - PCM stereo is supported; encoded HDMI passthrough is not processed.
 - DRM/protected-audio behavior has not been fully validated.
@@ -265,10 +278,10 @@ The tap is fail-open: if the processing reader disappears unexpectedly, Core Aud
 DellAudioMenu/
 ├── Info.plist
 ├── build.sh
-├── local.dellaudio.menu.plist
+├── io.github.utsabfdahal.volumac.plist
 └── Sources/
-    ├── DellAudioMenu.swift
-    ├── DellAudioMenu-Bridging-Header.h
+    ├── VoluMACApp.swift
+    ├── VoluMAC-Bridging-Header.h
     ├── MediaKeyMonitor.swift
     ├── SoftwareVolumeController.swift
     ├── SoftwareVolumeEngine.h
@@ -276,19 +289,19 @@ DellAudioMenu/
     └── VolumeHUDController.swift
 ```
 
-Additional root-level Swift files are diagnostic utilities used while investigating the Dell HDMI clock issue. `report.txt` and `.env` are deliberately ignored because they may contain machine identifiers or secrets.
+Additional root-level Swift files are diagnostic utilities used while investigating HDMI clock issues. `report.txt` and `.env` are deliberately ignored because they may contain machine identifiers or secrets.
 
 ## Uninstall
 
 ```sh
-launchctl bootout "gui/$(id -u)/local.dellaudio.menu" 2>/dev/null || true
-rm -f "$HOME/Library/LaunchAgents/local.dellaudio.menu.plist"
-rm -rf "$HOME/Applications/Dell Audio.app"
-defaults delete local.dellaudio.menu 2>/dev/null || true
-tccutil reset ListenEvent local.dellaudio.menu
+launchctl bootout "gui/$(id -u)/io.github.utsabfdahal.volumac" 2>/dev/null || true
+rm -f "$HOME/Library/LaunchAgents/io.github.utsabfdahal.volumac.plist"
+rm -rf "$HOME/Applications/VoluMAC.app"
+defaults delete io.github.utsabfdahal.volumac 2>/dev/null || true
+tccutil reset ListenEvent io.github.utsabfdahal.volumac
 ```
 
-Remove Dell Audio manually from Screen & System Audio Recording if macOS retains the entry.
+Remove VoluMAC manually from Screen & System Audio Recording if macOS retains the entry.
 
 ## License
 
