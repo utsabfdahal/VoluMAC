@@ -68,7 +68,11 @@ func availableRates(_ dev: AudioDeviceID) -> [Double] {
     return ranges.map { $0.mMinimum }
 }
 
-let target = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "DELL"
+guard CommandLine.arguments.count > 1 else {
+    print("usage: reset_hdmi_audio <output-name-substring>")
+    exit(2)
+}
+let target = CommandLine.arguments[1]
 
 print("--- output devices ---")
 var match: AudioDeviceID? = nil
