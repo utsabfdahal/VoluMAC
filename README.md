@@ -1,6 +1,6 @@
-# DisplayVolume for macOS
+# VoluMAC
 
-DisplayVolume is a lightweight native menu-bar utility that routes macOS audio to a Dell HDMI/DisplayPort monitor and provides software volume control when the display exposes no writable Core Audio volume control. The current app bundle and menu-bar product are named **Dell Audio**.
+VoluMAC is a lightweight native menu-bar utility that routes macOS audio to a Dell HDMI/DisplayPort monitor and provides software volume control when the display exposes no writable Core Audio volume control. The current app bundle and menu-bar product are named **Dell Audio**.
 
 It is designed for **Dell monitors with integrated speakers connected to an Apple-silicon Mac**, while the Core Audio processing design can be generalized to other external PCM audio devices.
 
@@ -292,4 +292,4 @@ Remove Dell Audio manually from Screen & System Audio Recording if macOS retains
 
 ## License
 
-DisplayVolume is available under the [MIT License](LICENSE).
+VoluMAC is available under the [MIT License](LICENSE).
