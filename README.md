@@ -19,6 +19,7 @@ It supports wired HDMI, DisplayPort, Thunderbolt, and USB display audio on Apple
   - **F11** — volume down
   - **F12** — volume up
   - **Option + Shift + F11/F12** — fine adjustment
+- Toggles between Mac speakers and the selected external output with **Control + Option + S** (`⌃⌥S`).
 - Shows a macOS-style volume HUD on the built-in MacBook display.
 - Uses a compact macOS Sound-style popover: volume slider, direct output list, Sound Settings, and advanced options under a bottom ellipsis menu.
 - Starts automatically at login through a user LaunchAgent.
@@ -39,6 +40,7 @@ flowchart LR
     G[F10 / F11 / F12] --> H[Atomic software gain]
     G --> I[HUD on built-in display]
     H --> E
+    J[Control + Option + S] --> K[Toggle built-in / selected output]
 ```
 
 The app keeps the selected physical device as the visible default output. A private `CATapDescription` captures the outgoing PCM mix and uses `.mutedWhenTapped`, so the original unscaled signal is muted only while the app is actively reading the tap. The selected device and tap share a private aggregate-device clock, and a small Objective-C++ real-time callback applies gain directly to the output buffers.
@@ -66,11 +68,11 @@ The prebuilt installer does **not** require Xcode, Command Line Tools, Homebrew,
 
 ## Install the prebuilt package
 
-1. Download `VoluMAC-3.1.1.pkg` and `VoluMAC-3.1.1.pkg.sha256` from the [latest GitHub release](https://github.com/utsabfdahal/VoluMAC/releases/latest).
+1. Download `VoluMAC-3.2.0.pkg` and `VoluMAC-3.2.0.pkg.sha256` from the [latest GitHub release](https://github.com/utsabfdahal/VoluMAC/releases/latest).
 2. Optionally verify the download from the containing directory:
 
   ```sh
-  shasum -a 256 -c VoluMAC-3.1.1.pkg.sha256
+  shasum -a 256 -c VoluMAC-3.2.0.pkg.sha256
   ```
 
 3. Open the package and complete the standard macOS Installer flow. It installs VoluMAC in `/Applications` and starts it automatically at login.
@@ -154,6 +156,8 @@ Enable VoluMAC in:
 
 Required for global F10/F11/F12 handling. The event tap is listen-only and processes only mute/volume media events and the F10–F12 fallback keycodes.
 
+The **Control + Option + S** output toggle uses macOS’s global hotkey API and does not require Input Monitoring.
+
 Enable VoluMAC in:
 
 **System Settings → Privacy & Security → Input Monitoring**
@@ -171,7 +175,8 @@ tccutil reset ListenEvent io.github.utsabfdahal.volumac
 3. Click the speaker/display icon in the menu bar.
 4. Choose an output directly from the **Output** list.
 5. Use the slider, mute button, or F10/F11/F12.
-6. Open advanced controls (auto-switch, 48 kHz, permissions, refresh, and Quit) from the bottom ellipsis menu.
+6. Press **Control + Option + S** or click the bottom arrow button to toggle between Mac speakers and the selected external output.
+7. Open advanced controls (auto-switch, 48 kHz, permissions, refresh, and Quit) from the bottom ellipsis menu.
 
 Normal volume steps are `1/16` (6.25%). Option+Shift uses `1/64` (1.5625%) steps.
 
@@ -196,6 +201,12 @@ Test media-key decoding without requesting Input Monitoring:
 
 ```sh
 "$APP/Contents/MacOS/VoluMAC" --test-media-key-decode
+```
+
+Verify that the global **Control + Option + S** shortcut can be registered:
+
+```sh
+"$APP/Contents/MacOS/VoluMAC" --test-output-shortcut
 ```
 
 After granting Input Monitoring, verify that wake/session recovery recreates the event tap:
@@ -269,6 +280,12 @@ tccutil reset ListenEvent io.github.utsabfdahal.volumac
 open "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent"
 ```
 
+### Control + Option + S does not switch outputs
+
+- Confirm the ellipsis menu says **⌃⌥S output toggle enabled**.
+- Quit any other utility using the same shortcut, then restart VoluMAC.
+- Confirm both Mac speakers and the selected external output appear in VoluMAC.
+
 ### One key press changes two steps
 
 Version 3.0 and newer deduplicates the paired system-defined and raw F-key events emitted by Apple keyboards. Version 3.0.1 recreates the media-key tap after system/display wake, user-session activation, invalidation, timeout, and every six hours. Version 3.1.1 also renews the tap after either default audio route changes, preventing media keys from going stale after switching to Mac speakers and back. Ensure only one VoluMAC process is running and that the installed app is current.
@@ -328,6 +345,7 @@ DellAudioMenu/
     ├── VoluMACApp.swift
     ├── VoluMAC-Bridging-Header.h
     ├── MediaKeyMonitor.swift
+    ├── OutputShortcutMonitor.swift
     ├── SoftwareVolumeController.swift
     ├── SoftwareVolumeEngine.h
     ├── SoftwareVolumeEngine.mm
