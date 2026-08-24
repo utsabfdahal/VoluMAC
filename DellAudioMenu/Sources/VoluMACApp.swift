@@ -321,6 +321,7 @@ final class AudioModel: ObservableObject {
     @Published private(set) var outputConnected = false
     @Published private(set) var outputIsDefault = false
     @Published private(set) var outputHandlesSystemSounds = false
+    @Published private(set) var defaultOutputDeviceID = AudioDeviceID(kAudioObjectUnknown)
     @Published private(set) var sampleRate = 0.0
     @Published private(set) var volume = 0.5
     @Published private(set) var volumeAvailable = false
@@ -446,6 +447,14 @@ final class AudioModel: ObservableObject {
 
     func isSelected(_ output: OutputDevice) -> Bool {
         selectedOutput?.uid == output.uid || preferredOutputUID == output.uid
+    }
+
+    func isActiveOutput(_ output: OutputDevice) -> Bool {
+        defaultOutputDeviceID == output.id
+    }
+
+    var builtInIsActive: Bool {
+        builtInDevice?.id == defaultOutputDeviceID
     }
 
     func refreshNow() {
@@ -739,6 +748,7 @@ final class AudioModel: ObservableObject {
         outputConnected = state.outputConnected
         outputIsDefault = state.outputIsDefault
         outputHandlesSystemSounds = state.outputHandlesSystemSounds
+        defaultOutputDeviceID = state.defaultOutput
         sampleRate = state.selectedOutput?.sampleRate ?? 0
         wasConnected = state.outputConnected
         hasRefreshed = true
@@ -870,188 +880,173 @@ final class AudioModel: ObservableObject {
 private struct VoluMACView: View {
     @ObservedObject var model: AudioModel
 
-    private var statusColor: Color {
-        if model.outputAudioReady { return .green }
-        return model.outputConnected ? .orange : .red
-    }
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 15) {
-            HStack(spacing: 12) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 10)
-                        .fill(Color.accentColor.opacity(0.14))
-                        .frame(width: 44, height: 44)
-                    Image(systemName: "display.and.arrow.down")
-                        .font(.system(size: 21, weight: .semibold))
-                        .foregroundStyle(Color.accentColor)
-                }
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("VoluMAC")
-                        .font(.headline)
-                    HStack(spacing: 6) {
-                        Circle().fill(statusColor).frame(width: 7, height: 7)
-                        Text(model.routeDescription)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-                }
-                Spacer()
-                Text(model.rateDescription)
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-            }
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Sound")
+                .font(.headline)
 
-            Menu {
-                if model.availableOutputs.isEmpty {
-                    Text("No compatible external outputs")
-                } else {
-                    ForEach(model.availableOutputs) { output in
-                        Button {
-                            model.chooseOutput(uid: output.uid)
-                        } label: {
-                            Label(
-                                "\(output.name) · \(output.transportLabel)",
-                                systemImage: model.isSelected(output)
-                                    ? "checkmark.circle.fill"
-                                    : "display"
-                            )
-                        }
-                    }
-                }
-            } label: {
-                HStack(spacing: 10) {
-                    Image(systemName: "display")
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(model.selectedOutputName)
-                            .font(.subheadline.weight(.semibold))
-                            .lineLimit(1)
-                        Text(model.selectedTransportLabel)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Image(systemName: "chevron.up.chevron.down")
-                        .font(.caption)
+            HStack(spacing: 9) {
+                Button {
+                    model.toggleMute()
+                } label: {
+                    Image(systemName: model.muted ? "speaker.slash.fill" : "speaker.fill")
                         .foregroundStyle(.secondary)
+                        .frame(width: 16)
                 }
-                .padding(10)
-                .background(.quaternary.opacity(0.65), in: RoundedRectangle(cornerRadius: 10))
-            }
-            .menuStyle(.borderlessButton)
-            .disabled(model.availableOutputs.isEmpty)
+                .buttonStyle(.plain)
+                .help(model.muted ? "Unmute" : "Mute")
 
-            Button {
-                model.activateSelectedOutput()
-            } label: {
-                Label(
-                    model.outputAudioReady
-                        ? "Selected output + volume are active"
-                        : "Use Selected Output for All Audio",
-                    systemImage: model.outputAudioReady
-                        ? "checkmark.circle.fill"
-                        : "speaker.arrow.circlepath"
+                Slider(
+                    value: Binding(
+                        get: { model.volume },
+                        set: { model.setVolumeFromUI($0) }
+                    ),
+                    in: 0...1
                 )
-                .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-            .disabled(!model.outputConnected || model.outputAudioReady)
+                .disabled(!model.outputConnected || !model.volumeAvailable)
+                .help("Software volume: \(Int((model.volume * 100).rounded()))%")
 
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Text("Software volume")
-                        .font(.subheadline.weight(.medium))
-                    Spacer()
-                    if model.volumeLoading {
-                        ProgressView().controlSize(.small)
-                    } else {
-                        Text("\(Int((model.volume * 100).rounded()))%")
-                            .font(.subheadline.monospacedDigit().weight(.semibold))
-                    }
-                }
-                HStack(spacing: 10) {
-                    Button {
-                        model.toggleMute()
-                    } label: {
-                        Image(systemName: model.muted ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                            .frame(width: 18)
-                    }
-                    .buttonStyle(.plain)
-                    .help(model.muted ? "Unmute selected output" : "Mute selected output")
-                    Slider(
-                        value: Binding(
-                            get: { model.volume },
-                            set: { model.setVolumeFromUI($0) }
-                        ),
-                        in: 0...1
-                    )
-                    .disabled(!model.outputConnected || !model.volumeAvailable)
-                }
+                Image(systemName: "speaker.wave.3.fill")
+                    .foregroundStyle(.secondary)
+                    .frame(width: 18)
             }
-            .padding(12)
-            .background(.quaternary.opacity(0.7), in: RoundedRectangle(cornerRadius: 12))
 
-            VStack(alignment: .leading, spacing: 9) {
-                Toggle(
-                    "Use selected output automatically",
-                    isOn: Binding(get: { model.autoSwitch }, set: { model.setAutoSwitch($0) })
-                )
-                Toggle(
-                    "Keep selected output at 48 kHz",
-                    isOn: Binding(get: { model.keep48k }, set: { model.setKeep48k($0) })
-                )
-                HStack {
-                    Label(
-                        model.mediaKeysActive ? "F10 · F11 · F12 enabled" : "Media keys need permission",
-                        systemImage: model.mediaKeysActive ? "keyboard.fill" : "keyboard.badge.ellipsis"
-                    )
-                    Spacer()
-                    if !model.mediaKeysActive {
-                        Button("Enable") { model.enableMediaKeys() }
-                            .controlSize(.small)
-                    }
-                }
-            }
-            .toggleStyle(.switch)
-            .font(.subheadline)
+            Divider()
 
-            Text(model.message)
-                .font(.caption)
+            Text("Output")
+                .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.secondary)
-                .lineLimit(2)
-                .frame(maxWidth: .infinity, alignment: .leading)
+
+            VStack(spacing: 3) {
+                if let builtIn = model.builtInDevice {
+                    SoundOutputRow(
+                        name: builtIn.name,
+                        detail: "Built-in",
+                        icon: "laptopcomputer",
+                        active: model.builtInIsActive
+                    ) {
+                        model.selectBuiltIn()
+                    }
+                }
+
+                ForEach(model.availableOutputs) { output in
+                    SoundOutputRow(
+                        name: output.name,
+                        detail: output.transportLabel,
+                        icon: output.transportType == kAudioDeviceTransportTypeUSB
+                            ? "speaker.wave.2.fill"
+                            : "display",
+                        active: model.isActiveOutput(output)
+                    ) {
+                        model.chooseOutput(uid: output.uid)
+                    }
+                }
+
+                if model.builtInDevice == nil && model.availableOutputs.isEmpty {
+                    Text("No audio outputs found")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 6)
+                }
+            }
 
             Divider()
 
             HStack {
-                Menu {
-                    Button("Use \(model.builtInName)") { model.selectBuiltIn() }
-                        .disabled(model.builtInDevice == nil)
-                    Button("Open Sound Settings") { model.openSoundSettings() }
-                    Button("Open Audio Privacy Settings") { model.openAudioPrivacySettings() }
-                    Button("Open Input Monitoring Settings") { model.openInputMonitoringSettings() }
-                } label: {
-                    Image(systemName: "ellipsis.circle")
+                Button("Sound Settings…") {
+                    model.openSoundSettings()
                 }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
+                .buttonStyle(.plain)
 
                 Spacer()
-                Text("Core Audio tap · no virtual driver")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                Spacer()
 
-                Button("Quit") { model.quitSafely() }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
+                extraFeaturesMenu
             }
         }
-        .padding(18)
-        .frame(width: 350)
+        .padding(13)
+        .frame(width: 305)
         .onAppear { model.refreshNow() }
+    }
+
+    private var extraFeaturesMenu: some View {
+        Menu {
+            Text(model.routeDescription)
+            Text("\(model.selectedOutputName) · \(model.rateDescription)")
+
+            Divider()
+
+            Toggle(
+                "Use selected output automatically",
+                isOn: Binding(get: { model.autoSwitch }, set: { model.setAutoSwitch($0) })
+            )
+            Toggle(
+                "Keep selected output at 48 kHz",
+                isOn: Binding(get: { model.keep48k }, set: { model.setKeep48k($0) })
+            )
+
+            if model.mediaKeysActive {
+                Label("F10 · F11 · F12 enabled", systemImage: "keyboard.fill")
+            } else {
+                Button("Enable media keys") { model.enableMediaKeys() }
+            }
+
+            Divider()
+
+            Button("Refresh Outputs") { model.refreshNow() }
+            Button("Audio Privacy Settings…") { model.openAudioPrivacySettings() }
+            Button("Input Monitoring Settings…") { model.openInputMonitoringSettings() }
+
+            Divider()
+
+            Button("Quit VoluMAC", role: .destructive) { model.quitSafely() }
+        } label: {
+            Image(systemName: "ellipsis.circle")
+                .font(.system(size: 15))
+                .foregroundStyle(.secondary)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("More VoluMAC options")
+    }
+}
+
+private struct SoundOutputRow: View {
+    let name: String
+    let detail: String
+    let icon: String
+    let active: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 9) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(active ? Color.accentColor : Color.secondary.opacity(0.16))
+                        .frame(width: 28, height: 28)
+                    Image(systemName: icon)
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(active ? Color.white : Color.secondary)
+                }
+
+                Text(name)
+                    .font(.subheadline.weight(active ? .semibold : .regular))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+
+                Spacer(minLength: 6)
+
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            .contentShape(Rectangle())
+            .padding(.horizontal, 5)
+            .padding(.vertical, 4)
+        }
+        .buttonStyle(.plain)
     }
 }
 
