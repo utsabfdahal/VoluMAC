@@ -131,6 +131,13 @@ final class MediaKeyMonitor {
         return isActive
     }
 
+    func routeDidChange() {
+        precondition(Thread.isMainThread)
+        // WindowServer can leave a listen-only media-key tap logically stale
+        // after the default audio route changes, even while it reports enabled.
+        scheduleRestart(after: 0.5)
+    }
+
     fileprivate func receive(type: CGEventType, event: CGEvent) {
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             scheduleRestart(after: 0.1)

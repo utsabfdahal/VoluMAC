@@ -361,6 +361,7 @@ final class AudioModel: ObservableObject {
     private var preferredOutputName: String?
     private var hasRefreshed = false
     private var wasConnected = false
+    private var defaultSystemOutputDeviceID = AudioDeviceID(kAudioObjectUnknown)
     private var nextEngineRetry = Date.distantPast
     private var lastCallbackCount: UInt64 = 0
     private var stalledCallbackChecks = 0
@@ -369,6 +370,7 @@ final class AudioModel: ObservableObject {
         || CommandLine.arguments.contains("--test-built-in-route")
         || CommandLine.arguments.contains("--test-media-key-decode")
         || CommandLine.arguments.contains("--test-media-key-lifecycle")
+        || CommandLine.arguments.contains("--test-media-key-route-change")
         || CommandLine.arguments.contains("--test-output-discovery")
         || CommandLine.arguments.contains("--test-hud")
 
@@ -627,6 +629,71 @@ final class AudioModel: ObservableObject {
         }
     }
 
+    func runMediaKeyRouteChangeTest(completion: @escaping () -> Void) {
+        guard mediaKeyMonitor.start(requestPermission: false) else {
+            print("MEDIA KEY ROUTE-CHANGE TEST: NO INPUT MONITORING PERMISSION")
+            completion()
+            return
+        }
+
+        let initial = router.snapshot(
+            preferredUID: preferredOutputUID,
+            preferredName: preferredOutputName
+        )
+        guard let output = initial.selectedOutput, let builtIn = initial.builtInDevice else {
+            print("MEDIA KEY ROUTE-CHANGE TEST: MISSING OUTPUT")
+            mediaKeyMonitor.stop()
+            completion()
+            return
+        }
+
+        do {
+            try router.selectOutput(output)
+            refreshRouting(allowAutoSwitch: false)
+            let before = mediaKeyMonitor.generation
+
+            try router.selectBuiltIn(builtIn)
+            refreshRouting(allowAutoSwitch: false)
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                let afterBuiltIn = self.mediaKeyMonitor.generation
+                do {
+                    try self.router.selectOutput(output)
+                    self.refreshRouting(allowAutoSwitch: false)
+                } catch {
+                    print("MEDIA KEY ROUTE-CHANGE TEST: FAIL — \(error.localizedDescription)")
+                    self.mediaKeyMonitor.stop()
+                    completion()
+                    return
+                }
+
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                    let afterOutput = self.mediaKeyMonitor.generation
+                    let routed = self.router.snapshot(
+                        preferredUID: output.uid,
+                        preferredName: output.name
+                    )
+                    let passed = afterBuiltIn > before
+                        && afterOutput > afterBuiltIn
+                        && self.mediaKeyMonitor.isActive
+                        && routed.defaultOutput == output.id
+                        && routed.defaultSystemOutput == output.id
+                    print("Media-key generations: \(before) -> \(afterBuiltIn) -> \(afterOutput)")
+                    print("Media-key tap active: \(self.mediaKeyMonitor.isActive)")
+                    print("External route restored: \(routed.defaultOutput == output.id && routed.defaultSystemOutput == output.id)")
+                    print("MEDIA KEY ROUTE-CHANGE TEST: \(passed ? "PASS" : "FAIL")")
+                    self.mediaKeyMonitor.stop()
+                    completion()
+                }
+            }
+        } catch {
+            try? router.selectOutput(output)
+            print("MEDIA KEY ROUTE-CHANGE TEST: FAIL — \(error.localizedDescription)")
+            mediaKeyMonitor.stop()
+            completion()
+        }
+    }
+
     func runHUDTest(completion: @escaping () -> Void) {
         let displayID = volumeHUD.show(volume: 0.5, muted: false, duration: 2.4)
         let builtIn = displayID.map { CGDisplayIsBuiltin($0) != 0 } ?? false
@@ -741,6 +808,8 @@ final class AudioModel: ObservableObject {
         )
         let connectedTransition = state.outputConnected && !wasConnected
         let initial = !hasRefreshed
+        let previousDefaultOutput = defaultOutputDeviceID
+        let previousDefaultSystemOutput = defaultSystemOutputDeviceID
 
         availableOutputs = state.availableOutputs
         selectedOutput = state.selectedOutput
@@ -749,9 +818,17 @@ final class AudioModel: ObservableObject {
         outputIsDefault = state.outputIsDefault
         outputHandlesSystemSounds = state.outputHandlesSystemSounds
         defaultOutputDeviceID = state.defaultOutput
+        defaultSystemOutputDeviceID = state.defaultSystemOutput
         sampleRate = state.selectedOutput?.sampleRate ?? 0
         wasConnected = state.outputConnected
         hasRefreshed = true
+
+        if previousDefaultOutput != kAudioObjectUnknown,
+           previousDefaultSystemOutput != kAudioObjectUnknown,
+           (previousDefaultOutput != state.defaultOutput
+            || previousDefaultSystemOutput != state.defaultSystemOutput) {
+            mediaKeyMonitor.routeDidChange()
+        }
 
         if let output = state.selectedOutput,
            preferredOutputUID != output.uid || preferredOutputName != output.name {
@@ -1066,6 +1143,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             NSApplication.shared.terminate(nil)
         } else if CommandLine.arguments.contains("--test-media-key-lifecycle") {
             AudioModel.shared.runMediaKeyLifecycleTest {
+                NSApplication.shared.terminate(nil)
+            }
+        } else if CommandLine.arguments.contains("--test-media-key-route-change") {
+            AudioModel.shared.runMediaKeyRouteChangeTest {
                 NSApplication.shared.terminate(nil)
             }
         } else if CommandLine.arguments.contains("--test-output-discovery") {

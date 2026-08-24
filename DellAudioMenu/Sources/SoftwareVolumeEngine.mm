@@ -385,7 +385,11 @@ void DAVolumeEngineDestroy(DAVolumeEngineRef reference) {
 void DAVolumeEngineSetGain(DAVolumeEngineRef reference, Float32 gain) {
     auto* engine = static_cast<Engine*>(reference);
     if (engine == nullptr) return;
-    engine->targetGain.store(std::clamp(gain, 0.0F, 1.0F), std::memory_order_relaxed);
+    const Float32 clampedGain = std::clamp(gain, 0.0F, 1.0F);
+    engine->targetGain.store(clampedGain, std::memory_order_relaxed);
+    if (!engine->running.load(std::memory_order_acquire)) {
+        engine->currentGain = clampedGain;
+    }
 }
 
 bool DAVolumeEngineIsRunning(DAVolumeEngineRef reference) {
