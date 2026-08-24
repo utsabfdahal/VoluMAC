@@ -329,6 +329,7 @@ final class AudioModel: ObservableObject {
     @Published private(set) var muted = false
     @Published private(set) var softwareVolumeActive = false
     @Published private(set) var mediaKeysActive = false
+    @Published private(set) var outputShortcutActive = false
     @Published private(set) var message = "Checking audio…"
 
     @Published var autoSwitch = true {
@@ -355,6 +356,7 @@ final class AudioModel: ObservableObject {
     private let router = AudioRouter()
     private let softwareVolume = SoftwareVolumeController()
     private let mediaKeyMonitor = MediaKeyMonitor()
+    private let outputShortcut = OutputShortcutMonitor()
     private let volumeHUD = VolumeHUDController()
     private var routingTimer: Timer?
     private var preferredOutputUID: String?
@@ -371,6 +373,7 @@ final class AudioModel: ObservableObject {
         || CommandLine.arguments.contains("--test-media-key-decode")
         || CommandLine.arguments.contains("--test-media-key-lifecycle")
         || CommandLine.arguments.contains("--test-media-key-route-change")
+        || CommandLine.arguments.contains("--test-output-shortcut")
         || CommandLine.arguments.contains("--test-output-discovery")
         || CommandLine.arguments.contains("--test-hud")
 
@@ -388,6 +391,10 @@ final class AudioModel: ObservableObject {
         preferredOutputName = defaults.string(forKey: Keys.selectedOutputName)
 
         if !isTesting {
+            outputShortcut.onToggle = { [weak self] in
+                self?.toggleOutput()
+            }
+            outputShortcutActive = outputShortcut.start()
             mediaKeyMonitor.onAction = { [weak self] action in self?.handleMediaKey(action) }
             mediaKeyMonitor.onStatusChange = { [weak self] active in
                 DispatchQueue.main.async {
@@ -459,6 +466,16 @@ final class AudioModel: ObservableObject {
         builtInDevice?.id == defaultOutputDeviceID
     }
 
+    var outputToggleAvailable: Bool {
+        builtInDevice != nil && outputConnected
+    }
+
+    var outputToggleTitle: String {
+        builtInIsActive
+            ? "Switch to \(selectedOutputName)"
+            : "Switch to \(builtInName)"
+    }
+
     func refreshNow() {
         refreshRouting()
     }
@@ -522,6 +539,18 @@ final class AudioModel: ObservableObject {
         }
     }
 
+    func toggleOutput() {
+        let state = router.snapshot(
+            preferredUID: preferredOutputUID,
+            preferredName: preferredOutputName
+        )
+        if let builtIn = state.builtInDevice, state.defaultOutput == builtIn.id {
+            activateSelectedOutput()
+        } else {
+            selectBuiltIn()
+        }
+    }
+
     func setVolumeFromUI(_ value: Double) {
         volume = min(max(value, 0), 1)
         if muted && volume > 0 {
@@ -580,6 +609,9 @@ final class AudioModel: ObservableObject {
         if !mediaKeyMonitor.maintain() {
             enableMediaKeys(requestPermission: true)
         }
+        if !outputShortcutActive {
+            outputShortcutActive = outputShortcut.start()
+        }
     }
 
     func quitSafely() {
@@ -588,6 +620,7 @@ final class AudioModel: ObservableObject {
     }
 
     func prepareForTermination() {
+        outputShortcut.stop()
         mediaKeyMonitor.stop()
         volumeHUD.hide()
         softwareVolume.stop()
@@ -692,6 +725,18 @@ final class AudioModel: ObservableObject {
             mediaKeyMonitor.stop()
             completion()
         }
+    }
+
+    func runOutputShortcutRegistrationTest(completion: @escaping () -> Void) {
+        let registered = outputShortcut.start() && outputShortcut.isActive
+        let repeatSuppression = OutputShortcutMonitor.runRepeatSuppressionSelfTest()
+        let passed = registered && repeatSuppression
+        print("Output shortcut: \(OutputShortcutMonitor.displayName)")
+        print("Shortcut registered: \(registered)")
+        print("Key-repeat suppression: \(repeatSuppression)")
+        print("OUTPUT SHORTCUT REGISTRATION TEST: \(passed ? "PASS" : "FAIL")")
+        outputShortcut.stop()
+        completion()
     }
 
     func runHUDTest(completion: @escaping () -> Void) {
@@ -1038,6 +1083,18 @@ private struct VoluMACView: View {
 
                 Spacer()
 
+                Button {
+                    model.toggleOutput()
+                } label: {
+                    Image(systemName: "arrow.left.arrow.right.circle")
+                        .font(.system(size: 15))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .disabled(!model.outputToggleAvailable)
+                .help("\(model.outputToggleTitle) (\(OutputShortcutMonitor.displayName))")
+                .accessibilityLabel(model.outputToggleTitle)
+
                 extraFeaturesMenu
             }
         }
@@ -1050,6 +1107,11 @@ private struct VoluMACView: View {
         Menu {
             Text(model.routeDescription)
             Text("\(model.selectedOutputName) · \(model.rateDescription)")
+
+            Button("\(model.outputToggleTitle)  \(OutputShortcutMonitor.displayName)") {
+                model.toggleOutput()
+            }
+            .disabled(!model.outputToggleAvailable)
 
             Divider()
 
@@ -1067,6 +1129,15 @@ private struct VoluMACView: View {
             } else {
                 Button("Enable media keys") { model.enableMediaKeys() }
             }
+
+            Label(
+                model.outputShortcutActive
+                    ? "\(OutputShortcutMonitor.displayName) output toggle enabled"
+                    : "\(OutputShortcutMonitor.displayName) shortcut unavailable",
+                systemImage: model.outputShortcutActive
+                    ? "arrow.left.arrow.right.circle.fill"
+                    : "exclamationmark.triangle"
+            )
 
             Divider()
 
@@ -1147,6 +1218,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         } else if CommandLine.arguments.contains("--test-media-key-route-change") {
             AudioModel.shared.runMediaKeyRouteChangeTest {
+                NSApplication.shared.terminate(nil)
+            }
+        } else if CommandLine.arguments.contains("--test-output-shortcut") {
+            AudioModel.shared.runOutputShortcutRegistrationTest {
                 NSApplication.shared.terminate(nil)
             }
         } else if CommandLine.arguments.contains("--test-output-discovery") {

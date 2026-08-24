@@ -30,11 +30,13 @@ xcrun swiftc \
     -import-objc-header "$SOURCES/VoluMAC-Bridging-Header.h" \
     -I "$SOURCES" \
     -framework AppKit \
+    -framework Carbon \
     -framework CoreAudio \
     -framework QuartzCore \
     -framework SwiftUI \
     "$SOURCES/VoluMACApp.swift" \
     "$SOURCES/MediaKeyMonitor.swift" \
+    "$SOURCES/OutputShortcutMonitor.swift" \
     "$SOURCES/SoftwareVolumeController.swift" \
     "$SOURCES/VolumeHUDController.swift" \
     "$ENGINE_OBJECT" \
