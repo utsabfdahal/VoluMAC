@@ -23,6 +23,7 @@ It supports wired HDMI, DisplayPort, Thunderbolt, and USB display audio on Apple
 - Uses a compact macOS Sound-style popover: volume slider, direct output list, Sound Settings, and advanced options under a bottom ellipsis menu.
 - Starts automatically at login through a user LaunchAgent.
 - Rebuilds its processing engine if Core Audio restarts or the callback stalls.
+- Renews the media-key listener after switching between built-in and external outputs.
 - Offers an immediate MacBook-speaker fallback from the menu.
 - Does not require eqMac, Background Music, BetterDisplay, a privileged helper, or a third-party audio driver.
 
@@ -65,11 +66,11 @@ The prebuilt installer does **not** require Xcode, Command Line Tools, Homebrew,
 
 ## Install the prebuilt package
 
-1. Download `VoluMAC-3.1.0.pkg` and `VoluMAC-3.1.0.pkg.sha256` from the [latest GitHub release](https://github.com/utsabfdahal/VoluMAC/releases/latest).
+1. Download `VoluMAC-3.1.1.pkg` and `VoluMAC-3.1.1.pkg.sha256` from the [latest GitHub release](https://github.com/utsabfdahal/VoluMAC/releases/latest).
 2. Optionally verify the download from the containing directory:
 
   ```sh
-  shasum -a 256 -c VoluMAC-3.1.0.pkg.sha256
+  shasum -a 256 -c VoluMAC-3.1.1.pkg.sha256
   ```
 
 3. Open the package and complete the standard macOS Installer flow. It installs VoluMAC in `/Applications` and starts it automatically at login.
@@ -203,6 +204,12 @@ After granting Input Monitoring, verify that wake/session recovery recreates the
 "$APP/Contents/MacOS/VoluMAC" --test-media-key-lifecycle
 ```
 
+Verify that switching from the external output to built-in speakers and back recreates the event tap after each route change:
+
+```sh
+"$APP/Contents/MacOS/VoluMAC" --test-media-key-route-change
+```
+
 List detected compatible outputs and the remembered selection:
 
 ```sh
@@ -264,7 +271,7 @@ open "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEven
 
 ### One key press changes two steps
 
-Version 3.0 and newer deduplicates the paired system-defined and raw F-key events emitted by Apple keyboards. Version 3.0.1 also recreates the media-key tap after system/display wake, user-session activation, invalidation, timeout, and every six hours. Ensure only one VoluMAC process is running and that the installed app is current.
+Version 3.0 and newer deduplicates the paired system-defined and raw F-key events emitted by Apple keyboards. Version 3.0.1 recreates the media-key tap after system/display wake, user-session activation, invalidation, timeout, and every six hours. Version 3.1.1 also renews the tap after either default audio route changes, preventing media keys from going stale after switching to Mac speakers and back. Ensure only one VoluMAC process is running and that the installed app is current.
 
 ### The HUD appears on the wrong display
 
