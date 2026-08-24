@@ -20,6 +20,7 @@ It supports wired HDMI, DisplayPort, Thunderbolt, and USB display audio on Apple
   - **F12** — volume up
   - **Option + Shift + F11/F12** — fine adjustment
 - Shows a macOS-style volume HUD on the built-in MacBook display.
+- Uses a compact macOS Sound-style popover: volume slider, direct output list, Sound Settings, and advanced options under a bottom ellipsis menu.
 - Starts automatically at login through a user LaunchAgent.
 - Rebuilds its processing engine if Core Audio restarts or the callback stalls.
 - Offers an immediate MacBook-speaker fallback from the menu.
@@ -64,11 +65,11 @@ The prebuilt installer does **not** require Xcode, Command Line Tools, Homebrew,
 
 ## Install the prebuilt package
 
-1. Download `VoluMAC-3.0.1.pkg` and `VoluMAC-3.0.1.pkg.sha256` from the [latest GitHub release](https://github.com/utsabfdahal/VoluMAC/releases/latest).
+1. Download `VoluMAC-3.1.0.pkg` and `VoluMAC-3.1.0.pkg.sha256` from the [latest GitHub release](https://github.com/utsabfdahal/VoluMAC/releases/latest).
 2. Optionally verify the download from the containing directory:
 
   ```sh
-  shasum -a 256 -c VoluMAC-3.0.1.pkg.sha256
+  shasum -a 256 -c VoluMAC-3.1.0.pkg.sha256
   ```
 
 3. Open the package and complete the standard macOS Installer flow. It installs VoluMAC in `/Applications` and starts it automatically at login.
@@ -156,7 +157,7 @@ Enable VoluMAC in:
 
 **System Settings → Privacy & Security → Input Monitoring**
 
-Because local builds are ad-hoc signed, replacing the executable changes its code hash. If media keys stop working after rebuilding, reset only this app’s Input Monitoring decision, restart it, and grant access again:
+Because VoluMAC is currently ad-hoc signed, installing an upgrade or replacing it with a local build changes the executable’s code hash. If media keys stop working afterward, reset only this app’s Input Monitoring decision, restart it, and grant access again:
 
 ```sh
 tccutil reset ListenEvent io.github.utsabfdahal.volumac
@@ -167,9 +168,9 @@ tccutil reset ListenEvent io.github.utsabfdahal.volumac
 1. Connect and power on the external display or output.
 2. Start VoluMAC or log in with the LaunchAgent installed.
 3. Click the speaker/display icon in the menu bar.
-4. Choose an output from the selector.
-5. Select **Use Selected Output for All Audio** if it is not already active.
-6. Use the slider, mute button, or F10/F11/F12.
+4. Choose an output directly from the **Output** list.
+5. Use the slider, mute button, or F10/F11/F12.
+6. Open advanced controls (auto-switch, 48 kHz, permissions, refresh, and Quit) from the bottom ellipsis menu.
 
 Normal volume steps are `1/16` (6.25%). Option+Shift uses `1/64` (1.5625%) steps.
 
