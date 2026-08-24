@@ -367,6 +367,7 @@ final class AudioModel: ObservableObject {
         || CommandLine.arguments.contains(where: { $0.hasPrefix("--self-test-gain=") })
         || CommandLine.arguments.contains("--test-built-in-route")
         || CommandLine.arguments.contains("--test-media-key-decode")
+        || CommandLine.arguments.contains("--test-media-key-lifecycle")
         || CommandLine.arguments.contains("--test-output-discovery")
         || CommandLine.arguments.contains("--test-hud")
 
@@ -391,9 +392,7 @@ final class AudioModel: ObservableObject {
                     self?.defaults.set(active, forKey: Keys.mediaKeysActive)
                 }
             }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
-                self?.enableMediaKeys(requestPermission: true)
-            }
+            enableMediaKeys(requestPermission: true)
         }
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
@@ -565,6 +564,13 @@ final class AudioModel: ObservableObject {
         }
     }
 
+    func applicationDidFinishLaunching() {
+        guard !isTesting else { return }
+        if !mediaKeyMonitor.maintain() {
+            enableMediaKeys(requestPermission: true)
+        }
+    }
+
     func quitSafely() {
         selectBuiltIn()
         NSApplication.shared.terminate(nil)
@@ -588,6 +594,28 @@ final class AudioModel: ObservableObject {
         print("Selected output: \(state.selectedOutput?.name ?? "none")")
         print("OUTPUT DISCOVERY TEST: \(!state.availableOutputs.isEmpty ? "PASS" : "NO EXTERNAL OUTPUT")")
         completion()
+    }
+
+    func runMediaKeyLifecycleTest(completion: @escaping () -> Void) {
+        guard mediaKeyMonitor.start(requestPermission: false) else {
+            print("MEDIA KEY LIFECYCLE TEST: NO INPUT MONITORING PERMISSION")
+            completion()
+            return
+        }
+        let before = mediaKeyMonitor.generation
+        NSWorkspace.shared.notificationCenter.post(
+            name: NSWorkspace.didWakeNotification,
+            object: NSWorkspace.shared
+        )
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+            let after = self.mediaKeyMonitor.generation
+            let passed = self.mediaKeyMonitor.isActive && after > before
+            print("Media-key generation: \(before) -> \(after)")
+            print("Media-key tap active: \(self.mediaKeyMonitor.isActive)")
+            print("MEDIA KEY LIFECYCLE TEST: \(passed ? "PASS" : "FAIL")")
+            self.mediaKeyMonitor.stop()
+            completion()
+        }
     }
 
     func runHUDTest(completion: @escaping () -> Void) {
@@ -776,8 +804,11 @@ final class AudioModel: ObservableObject {
     }
 
     private func refreshMediaKeys() {
-        guard !mediaKeysActive, mediaKeyMonitor.hasPermission else { return }
-        enableMediaKeys(requestPermission: false)
+        if mediaKeysActive {
+            mediaKeysActive = mediaKeyMonitor.maintain()
+        } else if mediaKeyMonitor.hasPermission {
+            enableMediaKeys(requestPermission: false)
+        }
     }
 
     private func startSoftwareVolume(silent: Bool) {
@@ -1026,6 +1057,7 @@ private struct VoluMACView: View {
 
 private final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
+        AudioModel.shared.applicationDidFinishLaunching()
         if CommandLine.arguments.contains("--self-test") {
             AudioModel.shared.runSelfTest { NSApplication.shared.terminate(nil) }
         } else if let argument = CommandLine.arguments.first(where: { $0.hasPrefix("--self-test-gain=") }),
@@ -1037,6 +1069,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             let passed = MediaKeyMonitor.runDecodeSelfTest()
             print("MEDIA KEY DECODE TEST: \(passed ? "PASS" : "FAIL")")
             NSApplication.shared.terminate(nil)
+        } else if CommandLine.arguments.contains("--test-media-key-lifecycle") {
+            AudioModel.shared.runMediaKeyLifecycleTest {
+                NSApplication.shared.terminate(nil)
+            }
         } else if CommandLine.arguments.contains("--test-output-discovery") {
             AudioModel.shared.runOutputDiscoveryTest { NSApplication.shared.terminate(nil) }
         } else if CommandLine.arguments.contains("--test-hud") {

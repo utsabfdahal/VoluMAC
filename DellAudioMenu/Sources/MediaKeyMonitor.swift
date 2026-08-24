@@ -33,11 +33,46 @@ final class MediaKeyMonitor {
 
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
+    private var lifecycleObservers: [NSObjectProtocol] = []
     private var lastAction: MediaKeyAction?
     private var lastEventType: CGEventType?
     private var lastActionTime: TimeInterval = 0
+    private var tapStartedAt: TimeInterval = 0
+    private var pendingRestart: DispatchWorkItem?
 
-    var isActive: Bool { eventTap != nil }
+    private(set) var generation: UInt64 = 0
+
+    private static let maximumTapAge: TimeInterval = 6 * 60 * 60
+
+    init() {
+        let center = NSWorkspace.shared.notificationCenter
+        for name in [
+            NSWorkspace.didWakeNotification,
+            NSWorkspace.screensDidWakeNotification,
+            NSWorkspace.sessionDidBecomeActiveNotification
+        ] {
+            lifecycleObservers.append(
+                center.addObserver(
+                    forName: name,
+                    object: nil,
+                    queue: .main
+                ) { [weak self] _ in
+                    self?.scheduleRestart(after: 0.75)
+                }
+            )
+        }
+    }
+
+    deinit {
+        pendingRestart?.cancel()
+        let center = NSWorkspace.shared.notificationCenter
+        lifecycleObservers.forEach(center.removeObserver)
+    }
+
+    var isActive: Bool {
+        guard let eventTap else { return false }
+        return CFMachPortIsValid(eventTap) && CGEvent.tapIsEnabled(tap: eventTap)
+    }
     var hasPermission: Bool { CGPreflightListenEventAccess() }
 
     @discardableResult
@@ -65,6 +100,8 @@ final class MediaKeyMonitor {
 
         eventTap = tap
         runLoopSource = source
+        tapStartedAt = ProcessInfo.processInfo.systemUptime
+        generation &+= 1
         CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
         onStatusChange?(true)
@@ -72,18 +109,31 @@ final class MediaKeyMonitor {
     }
 
     func stop() {
+        pendingRestart?.cancel()
+        pendingRestart = nil
         if let tap = eventTap { CGEvent.tapEnable(tap: tap, enable: false) }
         if let source = runLoopSource {
             CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes)
         }
         runLoopSource = nil
         eventTap = nil
+        tapStartedAt = 0
         onStatusChange?(false)
+    }
+
+    @discardableResult
+    func maintain() -> Bool {
+        precondition(Thread.isMainThread)
+        let age = ProcessInfo.processInfo.systemUptime - tapStartedAt
+        if !isActive || age >= Self.maximumTapAge {
+            restart()
+        }
+        return isActive
     }
 
     fileprivate func receive(type: CGEventType, event: CGEvent) {
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-            if let tap = eventTap { CGEvent.tapEnable(tap: tap, enable: true) }
+            scheduleRestart(after: 0.1)
             return
         }
 
@@ -100,6 +150,24 @@ final class MediaKeyMonitor {
         lastEventType = type
         lastActionTime = now
         DispatchQueue.main.async { [weak self] in self?.onAction?(action) }
+    }
+
+    private func scheduleRestart(after delay: TimeInterval) {
+        pendingRestart?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.restart() }
+        pendingRestart = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
+    private func restart() {
+        precondition(Thread.isMainThread)
+        pendingRestart?.cancel()
+        pendingRestart = nil
+        let permitted = hasPermission
+        stop()
+        if permitted {
+            _ = start(requestPermission: false)
+        }
     }
 
     private static func decode(type: CGEventType, event: CGEvent) -> MediaKeyAction? {
