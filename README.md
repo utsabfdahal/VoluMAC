@@ -64,11 +64,11 @@ The prebuilt installer does **not** require Xcode, Command Line Tools, Homebrew,
 
 ## Install the prebuilt package
 
-1. Download `VoluMAC-3.0.0.pkg` and `VoluMAC-3.0.0.pkg.sha256` from the [latest GitHub release](https://github.com/utsabfdahal/VoluMAC/releases/latest).
+1. Download `VoluMAC-3.0.1.pkg` and `VoluMAC-3.0.1.pkg.sha256` from the [latest GitHub release](https://github.com/utsabfdahal/VoluMAC/releases/latest).
 2. Optionally verify the download from the containing directory:
 
   ```sh
-  shasum -a 256 -c VoluMAC-3.0.0.pkg.sha256
+  shasum -a 256 -c VoluMAC-3.0.1.pkg.sha256
   ```
 
 3. Open the package and complete the standard macOS Installer flow. It installs VoluMAC in `/Applications` and starts it automatically at login.
@@ -196,6 +196,12 @@ Test media-key decoding without requesting Input Monitoring:
 "$APP/Contents/MacOS/VoluMAC" --test-media-key-decode
 ```
 
+After granting Input Monitoring, verify that wake/session recovery recreates the event tap:
+
+```sh
+"$APP/Contents/MacOS/VoluMAC" --test-media-key-lifecycle
+```
+
 List detected compatible outputs and the remembered selection:
 
 ```sh
@@ -257,7 +263,7 @@ open "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEven
 
 ### One key press changes two steps
 
-Version 3.0 and newer deduplicates the paired system-defined and raw F-key events emitted by Apple keyboards. Ensure only one VoluMAC process is running and that the installed app is current.
+Version 3.0 and newer deduplicates the paired system-defined and raw F-key events emitted by Apple keyboards. Version 3.0.1 also recreates the media-key tap after system/display wake, user-session activation, invalidation, timeout, and every six hours. Ensure only one VoluMAC process is running and that the installed app is current.
 
 ### The HUD appears on the wrong display
 
