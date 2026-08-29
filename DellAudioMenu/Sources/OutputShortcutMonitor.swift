@@ -41,7 +41,10 @@ final class OutputShortcutMonitor {
     private var isPressed = false
     private var releaseToken: UInt64 = 0
 
-    private static let releaseQuietPeriod: TimeInterval = 0.2
+    // Carbon can emit another press/release pair roughly 0.8 seconds into a
+    // held shortcut. Keep the chord latched through the hardware route-settle
+    // window so one physical hold can never trigger a second route change.
+    private static let releaseQuietPeriod: TimeInterval = 1.5
 
     var isActive: Bool {
         hotKey != nil && eventHandler != nil

@@ -330,6 +330,7 @@ final class AudioModel: ObservableObject {
     @Published private(set) var softwareVolumeActive = false
     @Published private(set) var mediaKeysActive = false
     @Published private(set) var outputShortcutActive = false
+    @Published private(set) var isRoutingOutput = false
     @Published private(set) var message = "Checking audio…"
 
     @Published var autoSwitch = true {
@@ -338,7 +339,9 @@ final class AudioModel: ObservableObject {
     @Published var keep48k = true {
         didSet {
             defaults.set(keep48k, forKey: Keys.keep48k)
-            if keep48k { pinSelectedRate(silent: false) }
+            if keep48k && allowsExperimentalSoftwareVolume {
+                pinSelectedRate(silent: false)
+            }
         }
     }
 
@@ -358,15 +361,22 @@ final class AudioModel: ObservableObject {
     private let mediaKeyMonitor = MediaKeyMonitor()
     private let outputShortcut = OutputShortcutMonitor()
     private let volumeHUD = VolumeHUDController()
+    private let routeQueue = DispatchQueue(
+        label: "io.github.utsabfdahal.volumac.route",
+        qos: .userInitiated
+    )
     private var routingTimer: Timer?
     private var preferredOutputUID: String?
     private var preferredOutputName: String?
     private var hasRefreshed = false
     private var wasConnected = false
     private var defaultSystemOutputDeviceID = AudioDeviceID(kAudioObjectUnknown)
+    private var nextOutputToggleTime = ProcessInfo.processInfo.systemUptime
+    private var routeGeneration: UInt64 = 0
     private var nextEngineRetry = Date.distantPast
     private var lastCallbackCount: UInt64 = 0
     private var stalledCallbackChecks = 0
+    private let allowsExperimentalSoftwareVolume = false
     private let isTesting = CommandLine.arguments.contains("--self-test")
         || CommandLine.arguments.contains(where: { $0.hasPrefix("--self-test-gain=") })
         || CommandLine.arguments.contains("--test-built-in-route")
@@ -395,6 +405,9 @@ final class AudioModel: ObservableObject {
                 self?.toggleOutput()
             }
             outputShortcutActive = outputShortcut.start()
+        }
+
+        if !isTesting && allowsExperimentalSoftwareVolume {
             mediaKeyMonitor.onAction = { [weak self] action in self?.handleMediaKey(action) }
             mediaKeyMonitor.onStatusChange = { [weak self] active in
                 DispatchQueue.main.async {
@@ -410,19 +423,26 @@ final class AudioModel: ObservableObject {
         }
         if !isTesting {
             routingTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
-                self?.refreshRouting()
-                self?.refreshMediaKeys()
+                guard let self, !self.isRoutingOutput else { return }
+                self.refreshRouting()
+                self.refreshMediaKeys()
             }
         }
     }
 
     var menuIcon: String {
-        if outputAudioReady { return muted ? "speaker.slash.fill" : "speaker.wave.2.fill" }
+        if outputAudioReady {
+            return !usesDirectOutputSafeMode && muted
+                ? "speaker.slash.fill"
+                : "speaker.wave.2.fill"
+        }
         return outputConnected ? "display" : "speaker.wave.2"
     }
 
     var outputAudioReady: Bool {
-        outputIsDefault && outputHandlesSystemSounds && softwareVolumeActive
+        outputIsDefault
+            && outputHandlesSystemSounds
+            && (!allowsExperimentalSoftwareVolume || softwareVolumeActive)
     }
 
     var selectedOutputName: String {
@@ -438,10 +458,14 @@ final class AudioModel: ObservableObject {
     }
 
     var routeDescription: String {
+        if isRoutingOutput { return "Switching audio output…" }
         if selectedOutput == nil, !availableOutputs.isEmpty, preferredOutputUID == nil {
             return "Choose an external output"
         }
         if !outputConnected { return "Selected output is disconnected" }
+        if !allowsExperimentalSoftwareVolume, outputIsDefault, outputHandlesSystemSounds {
+            return "Selected · direct output safe mode"
+        }
         if outputAudioReady { return "Selected · software volume active" }
         if outputIsDefault && outputHandlesSystemSounds { return "Selected · volume permission needed" }
         if outputIsDefault { return "Selected for application audio" }
@@ -467,7 +491,7 @@ final class AudioModel: ObservableObject {
     }
 
     var outputToggleAvailable: Bool {
-        builtInDevice != nil && outputConnected
+        builtInDevice != nil && outputConnected && !isRoutingOutput
     }
 
     var outputToggleTitle: String {
@@ -476,11 +500,23 @@ final class AudioModel: ObservableObject {
             : "Switch to \(builtInName)"
     }
 
+    var usesDirectOutputSafeMode: Bool {
+        !allowsExperimentalSoftwareVolume
+    }
+
+    var processingModeDescription: String {
+        usesDirectOutputSafeMode
+            ? "Direct output safe mode · software volume is off"
+            : "Experimental software volume"
+    }
+
     func refreshNow() {
+        guard !isRoutingOutput else { return }
         refreshRouting()
     }
 
     func chooseOutput(uid: String) {
+        guard beginRouteChange() else { return }
         guard let output = availableOutputs.first(where: { $0.uid == uid }) else { return }
         preferredOutputUID = output.uid
         preferredOutputName = output.name
@@ -501,8 +537,13 @@ final class AudioModel: ObservableObject {
             return
         }
 
+        if usesDirectOutputSafeMode {
+            routeDirectly(to: output, builtIn: false, silent: silent)
+            return
+        }
+
         var rateWarning: String?
-        if keep48k {
+        if allowsExperimentalSoftwareVolume && keep48k {
             do { try router.pinTo48k(output) }
             catch { rateWarning = error.localizedDescription }
         }
@@ -511,9 +552,13 @@ final class AudioModel: ObservableObject {
             stopSoftwareVolume()
             try router.selectOutput(output)
             refreshRouting(allowAutoSwitch: false)
-            startSoftwareVolume(silent: silent)
+            if allowsExperimentalSoftwareVolume {
+                startSoftwareVolume(silent: silent)
+            }
             if !silent {
-                message = rateWarning ?? "Audio routed to \(output.name)."
+                message = rateWarning ?? (allowsExperimentalSoftwareVolume
+                    ? "Audio routed to \(output.name)."
+                    : "Audio routed directly to \(output.name) in safe mode.")
             }
         } catch {
             message = error.localizedDescription
@@ -521,12 +566,21 @@ final class AudioModel: ObservableObject {
     }
 
     func selectBuiltIn() {
+        guard beginRouteChange() else { return }
+        selectBuiltInIgnoringCooldown()
+    }
+
+    private func selectBuiltInIgnoringCooldown() {
         let state = router.snapshot(
             preferredUID: preferredOutputUID,
             preferredName: preferredOutputName
         )
         guard let builtIn = state.builtInDevice else {
             message = AudioRouteError.builtInUnavailable.localizedDescription
+            return
+        }
+        if usesDirectOutputSafeMode {
+            routeDirectly(to: builtIn, builtIn: true, silent: false)
             return
         }
         do {
@@ -540,18 +594,16 @@ final class AudioModel: ObservableObject {
     }
 
     func toggleOutput() {
-        let state = router.snapshot(
-            preferredUID: preferredOutputUID,
-            preferredName: preferredOutputName
-        )
-        if let builtIn = state.builtInDevice, state.defaultOutput == builtIn.id {
+        guard beginRouteChange() else { return }
+        if builtInIsActive {
             activateSelectedOutput()
         } else {
-            selectBuiltIn()
+            selectBuiltInIgnoringCooldown()
         }
     }
 
     func setVolumeFromUI(_ value: Double) {
+        guard softwareVolumeActive else { return }
         volume = min(max(value, 0), 1)
         if muted && volume > 0 {
             muted = false
@@ -563,6 +615,7 @@ final class AudioModel: ObservableObject {
     }
 
     func toggleMute() {
+        guard softwareVolumeActive else { return }
         muted.toggle()
         defaults.set(muted, forKey: Keys.muted)
         softwareVolume.setGain(effectiveGain)
@@ -606,7 +659,7 @@ final class AudioModel: ObservableObject {
 
     func applicationDidFinishLaunching() {
         guard !isTesting else { return }
-        if !mediaKeyMonitor.maintain() {
+        if allowsExperimentalSoftwareVolume && !mediaKeyMonitor.maintain() {
             enableMediaKeys(requestPermission: true)
         }
         if !outputShortcutActive {
@@ -615,7 +668,11 @@ final class AudioModel: ObservableObject {
     }
 
     func quitSafely() {
-        selectBuiltIn()
+        if usesDirectOutputSafeMode {
+            NSApplication.shared.terminate(nil)
+            return
+        }
+        selectBuiltInIgnoringCooldown()
         NSApplication.shared.terminate(nil)
     }
 
@@ -881,17 +938,21 @@ final class AudioModel: ObservableObject {
         }
 
         let routeIsSplit = !state.outputIsDefault || !state.outputHandlesSystemSounds
-        if allowAutoSwitch,
+          if allowsExperimentalSoftwareVolume,
+              allowAutoSwitch,
            autoSwitch,
            state.outputConnected,
            routeIsSplit,
            (initial || connectedTransition) {
             activateSelectedOutput(silent: true)
-        } else if keep48k, state.outputConnected, (initial || connectedTransition) {
+        } else if allowsExperimentalSoftwareVolume,
+                  keep48k,
+                  state.outputConnected,
+                  (initial || connectedTransition) {
             pinSelectedRate(silent: true)
         }
 
-        if state.outputIsDefault {
+        if allowsExperimentalSoftwareVolume, state.outputIsDefault {
             if !softwareVolume.isActive && Date() >= nextEngineRetry && !isTesting {
                 startSoftwareVolume(silent: true)
             }
@@ -914,7 +975,9 @@ final class AudioModel: ObservableObject {
 
         if message == "Checking audio…" {
             message = state.outputConnected
-                ? "Preparing software volume…"
+                ? (allowsExperimentalSoftwareVolume
+                    ? "Preparing software volume…"
+                    : "Ready · direct output safe mode")
                 : (state.availableOutputs.isEmpty
                     ? "No compatible external output detected"
                     : "Choose an external output")
@@ -925,7 +988,66 @@ final class AudioModel: ObservableObject {
         muted ? 0 : Float(volume)
     }
 
+    private func beginRouteChange() -> Bool {
+        let now = ProcessInfo.processInfo.systemUptime
+        guard !isRoutingOutput, now >= nextOutputToggleTime else {
+            message = "Wait for the current audio route to settle."
+            return false
+        }
+        nextOutputToggleTime = now + 1.5
+        return true
+    }
+
+    private func routeDirectly(
+        to device: OutputDevice,
+        builtIn: Bool,
+        silent: Bool
+    ) {
+        guard !isRoutingOutput else { return }
+        isRoutingOutput = true
+        routeGeneration &+= 1
+        let generation = routeGeneration
+        message = "Switching audio to \(device.name)…"
+
+        routeQueue.async { [weak self] in
+            guard let self else { return }
+            let result: Result<Void, Error>
+            do {
+                if builtIn {
+                    try self.router.selectBuiltIn(device)
+                } else {
+                    try self.router.selectOutput(device)
+                }
+                result = .success(())
+            } catch {
+                result = .failure(error)
+            }
+
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.routeGeneration == generation else { return }
+                self.isRoutingOutput = false
+                self.refreshRouting(allowAutoSwitch: false)
+                switch result {
+                case .success:
+                    if !silent {
+                        self.message = "Audio routed directly to \(device.name) in safe mode."
+                    }
+                case let .failure(error):
+                    self.message = error.localizedDescription
+                }
+            }
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
+            guard let self,
+                  self.routeGeneration == generation,
+                  self.isRoutingOutput else { return }
+            self.message = "macOS is taking longer than expected to switch audio. VoluMAC is still responsive."
+        }
+    }
+
     private func handleMediaKey(_ action: MediaKeyAction) {
+        guard softwareVolumeActive else { return }
         let step = action.fineAdjustment ? 1.0 / 64.0 : 1.0 / 16.0
         switch action.command {
         case .mute: toggleMute()
@@ -936,6 +1058,7 @@ final class AudioModel: ObservableObject {
     }
 
     private func refreshMediaKeys() {
+        guard allowsExperimentalSoftwareVolume else { return }
         if mediaKeysActive {
             mediaKeysActive = mediaKeyMonitor.maintain()
         } else if mediaKeyMonitor.hasPermission {
@@ -1007,30 +1130,37 @@ private struct VoluMACView: View {
             Text("Sound")
                 .font(.headline)
 
-            HStack(spacing: 9) {
-                Button {
-                    model.toggleMute()
-                } label: {
-                    Image(systemName: model.muted ? "speaker.slash.fill" : "speaker.fill")
-                        .foregroundStyle(.secondary)
-                        .frame(width: 16)
-                }
-                .buttonStyle(.plain)
-                .help(model.muted ? "Unmute" : "Mute")
-
-                Slider(
-                    value: Binding(
-                        get: { model.volume },
-                        set: { model.setVolumeFromUI($0) }
-                    ),
-                    in: 0...1
-                )
-                .disabled(!model.outputConnected || !model.volumeAvailable)
-                .help("Software volume: \(Int((model.volume * 100).rounded()))%")
-
-                Image(systemName: "speaker.wave.3.fill")
+            if model.usesDirectOutputSafeMode {
+                Label(model.processingModeDescription, systemImage: "shield.checkered")
+                    .font(.caption)
                     .foregroundStyle(.secondary)
-                    .frame(width: 18)
+            } else {
+                HStack(spacing: 9) {
+                    Button {
+                        model.toggleMute()
+                    } label: {
+                        Image(systemName: model.muted ? "speaker.slash.fill" : "speaker.fill")
+                            .foregroundStyle(.secondary)
+                            .frame(width: 16)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!model.volumeAvailable)
+                    .help(model.muted ? "Unmute" : "Mute")
+
+                    Slider(
+                        value: Binding(
+                            get: { model.volume },
+                            set: { model.setVolumeFromUI($0) }
+                        ),
+                        in: 0...1
+                    )
+                    .disabled(!model.outputConnected || !model.volumeAvailable)
+                    .help("Software volume: \(Int((model.volume * 100).rounded()))%")
+
+                    Image(systemName: "speaker.wave.3.fill")
+                        .foregroundStyle(.secondary)
+                        .frame(width: 18)
+                }
             }
 
             Divider()
@@ -1083,6 +1213,11 @@ private struct VoluMACView: View {
 
                 Spacer()
 
+                if model.isRoutingOutput {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+
                 Button {
                     model.toggleOutput()
                 } label: {
@@ -1115,16 +1250,20 @@ private struct VoluMACView: View {
 
             Divider()
 
-            Toggle(
-                "Use selected output automatically",
-                isOn: Binding(get: { model.autoSwitch }, set: { model.setAutoSwitch($0) })
-            )
-            Toggle(
-                "Keep selected output at 48 kHz",
-                isOn: Binding(get: { model.keep48k }, set: { model.setKeep48k($0) })
-            )
+            if !model.usesDirectOutputSafeMode {
+                Toggle(
+                    "Use selected output automatically",
+                    isOn: Binding(get: { model.autoSwitch }, set: { model.setAutoSwitch($0) })
+                )
+                Toggle(
+                    "Keep selected output at 48 kHz",
+                    isOn: Binding(get: { model.keep48k }, set: { model.setKeep48k($0) })
+                )
+            }
 
-            if model.mediaKeysActive {
+            if model.usesDirectOutputSafeMode {
+                Label("F10 · F11 · F12 use macOS direct control", systemImage: "shield.checkered")
+            } else if model.mediaKeysActive {
                 Label("F10 · F11 · F12 enabled", systemImage: "keyboard.fill")
             } else {
                 Button("Enable media keys") { model.enableMediaKeys() }
@@ -1142,8 +1281,10 @@ private struct VoluMACView: View {
             Divider()
 
             Button("Refresh Outputs") { model.refreshNow() }
-            Button("Audio Privacy Settings…") { model.openAudioPrivacySettings() }
-            Button("Input Monitoring Settings…") { model.openInputMonitoringSettings() }
+            if !model.usesDirectOutputSafeMode {
+                Button("Audio Privacy Settings…") { model.openAudioPrivacySettings() }
+                Button("Input Monitoring Settings…") { model.openInputMonitoringSettings() }
+            }
 
             Divider()
 
